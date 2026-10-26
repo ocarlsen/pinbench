@@ -39,62 +39,81 @@ a printed report. See the full story: [ESSAY_URL].
 ```
 pip install -e ".[dev]"
 export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-pinbench plan examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate gpt-5-mini --cap 0.10
-pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate gpt-5-mini --cap 0.10 --name demo
+pinbench plan examples/suites/summaries.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.25
+pinbench run examples/suites/summaries.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.25 --name demo
 pinbench vote demo --open
-pinbench report demo
+pinbench report demo --votes ~/Downloads/votes.json
 ```
 
-The example suite is 12 short items; at current prices the whole run costs under $0.05.
+The summaries suite is 10 short passages; the live run below cost about two cents. To compare
+across providers, also export `OPENAI_API_KEY` and pass an OpenAI model id (some OpenAI models
+require a verified organization).
 
-## Sample report
+## Sample report (live run)
 
-This is `report.md` for `examples/suites/capitals.yaml`, incumbent `claude-sonnet-5-5`
-against candidate `gpt-5-mini`. It was produced offline by the same fake provider the
-tests use, with two candidate answers scripted wrong (Sydney for Australia, Istanbul for
-Turkey) to show what a HOLD looks like; it is not the output of a live API run yet.
+A real run on 2026-10-26: should a summarization job move from `claude-sonnet-5-5` to the much
+cheaper `claude-haiku-5-5`? Ten passages, both models, then ten blind votes by a human who did
+not know which side was which.
 
 ```
-# pinbench report: capitals-demo
+# pinbench report: summaries-v4
 
-**claude-sonnet-5-5** (incumbent) vs **gpt-5-mini** (candidate)
+**claude-sonnet-5-5** (incumbent) vs **claude-haiku-5-5** (candidate)
 
-- Items: 12/12 completed
-- Spend: $0.0026 of $0.10 cap (estimate $0.0148)
+- Items: 10/10 completed
+- Spend: $0.0209 of $0.25 cap (estimate $0.0412)
 
 ## Checks
 
 | check | result | detail |
 |---|---|---|
-| completeness | PASS | n=12 >= 10 |
+| completeness | PASS | n=10 >= 10 |
 | errors | PASS | incumbent and candidate both had 0 errors |
-| votes_present | PASS | votes not required for this suite |
-| labels | FAIL | candidate 83.3% (10/12) vs incumbent 100.0% (12/12); tolerance 0.0 points; FAIL |
-| cost | PASS | candidate $0.000010/item vs incumbent $0.000210/item (ratio 0.05, allowed 1.25); PASS |
+| truncation | PASS | incumbent 0 truncated, candidate 0 truncated; allowed 0 per arm; PASS |
+| votes_present | PASS | votes cover all 10 completed items |
+| votes | PASS | candidate 1, incumbent 1, ties 8 of 10; PASS (non-losing) |
+| cost | PASS | candidate $0.000093/item vs incumbent $0.002001/item (ratio 0.05, allowed 1.25); PASS |
 
-## Verdict: HOLD
+## Verdict: RECOMMEND
 
-a candidate is recommended when it is non-inferior on labels (within 0.0 points),
-non-losing on blind votes (ties excluded), and costs no more than 125% of the incumbent
-per item, over at least 10 completed items with no errors. 12 items can show a large
-regression, not a small one (1/n = 8.3 points); the downside of a wrong RECOMMEND is
-bounded by `pinbench bump` being one reverted commit.
+a candidate is recommended when it is non-inferior on labels (within 0.0 points), non-losing on blind votes (ties excluded), and costs no more than 125% of the incumbent per item, over at least 10 completed items with no errors and no more than 0 truncated output(s) per arm. 10 items can show a large regression, not a small one (1/n = 10.0 points); the downside of a wrong RECOMMEND is bounded by `pinbench bump` being one reverted commit.
 ```
 
-Two scripted misses on 12 items are enough to fail the labels check, so the verdict is
-HOLD, not RECOMMEND, and `bump` refuses this pair until a report says otherwise. The cost
-check passes by a wide margin and does not rescue it: a cheaper model that is wrong more
-often is a regression.
+The votes were eight ties and one win each, and the candidate costs about a twentieth as much
+per item, so the verdict is RECOMMEND. The rule says what that is worth: ten items can catch a
+large regression, not a small one, and the switch is one reverted commit away.
 
-`vote.html` from the same run:
+The blind vote page from the same run (the instructions at the top are all a voter sees; model
+ids never appear):
 
 ![vote page screenshot](docs/vote-page.png)
 
-TODO(Owen): replace this sample with a live run once you authorize the metered API spend:
-`pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate
-gpt-5-mini --cap 0.10 --name capitals-live`, then swap the report text and screenshot
-above for the real ones.
+### What the first live runs caught
+
+The tool was built and unit-tested offline first. The first three live runs each failed, and
+each failure became a check that now ships with it:
+
+1. **A rejected sampling parameter.** The newer model refused `temperature`, every call failed,
+   and the first version still printed "10/10 completed" and built a vote page of blank cards.
+   Now a failed call counts as a failure, a run where one side has zero successes exits nonzero,
+   a request refused before generating is charged $0, and `vote` refuses to render missing output.
+2. **Thinking that ate the budget.** The incumbent model reasons by default, so a tight output
+   ceiling was spent on invisible reasoning: answers came back truncated, and one came back empty
+   while still counted as a success. Now empty text is a failure, every output records its stop
+   reason, and any truncated output makes the verdict INCOMPLETE.
+3. **"Off" is spelled differently per model.** The two models accept different settings to turn
+   reasoning off. That is a fact about each model, so it lives in the model registry
+   (`request_defaults` in `prices.yaml`), not in a single hard-coded default.
+
+None of these would have shown up as an error in a dashboard. They are the reason the verdict
+can come back INCOMPLETE, and the reason a report states what it checked.
+
+### A HOLD, for contrast
+
+`examples/suites/capitals.yaml` has labeled answers instead of votes. In an offline demo with two
+candidate answers scripted wrong (Sydney for Australia, Istanbul for Turkey), the labels check
+fails at 83.3% against 100%, and the verdict is HOLD even though the candidate is twenty times
+cheaper: a cheaper model that is wrong more often is a regression, and `bump` refuses the pair.
 
 ## Design decisions
 
