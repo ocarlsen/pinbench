@@ -173,9 +173,12 @@ more than `policy.extra_tolerance`, default 0.5 per item, worse than the incumbe
 
 For the cost check, a judge strict win (candidate recall strictly better than the incumbent
 beyond `recall_tolerance_points`, with `judge_extra` also passing) waives the cost tolerance
-the same way a label strict win plus a vote strict win does for a labeled suite. It is one
-instrument standing in for two, so treat a RECOMMEND that rests on it as "worth the money"
-by the judge's lights, not by yours.
+on its own only when `scoring.votes` is `none` -- that is the only signal a suite with no
+vote collection has. A judge suite that also collects votes has two independent signals, and
+both must agree: the judge strict win AND a candidate strict win on the vote tally, the same
+pairing a labeled suite uses (label strict win plus vote strict win). It is one instrument
+standing in for two, so treat a RECOMMEND that rests on it as "worth the money" by the
+judge's lights, not by yours.
 
 Two practical limits. The judge's `max_output_tokens` is a ceiling on its whole reply, and on
 a judge model that always thinks (Claude Opus 5.5, for one: `thinking` cannot be turned off,

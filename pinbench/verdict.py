@@ -256,7 +256,9 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
 def _hold_checks(run: dict, suite, votes, mapping) -> list:
     """Every non-INCOMPLETE check: labels or judge recall/extra, votes, then cost (which may
     waive its own tolerance on a strict win from whichever pair of independent signals this
-    suite has)."""
+    suite has). A judge suite with `scoring.votes: none` has only one signal (recall+extra),
+    so that signal alone can waive; a judge suite that also collects votes has two, and both
+    must agree -- a judge strict win on its own is not enough when a vote signal exists."""
     hold_checks = []
     label_check = _check_labels(run, suite)
     if label_check is not None:
@@ -279,7 +281,11 @@ def _hold_checks(run: dict, suite, votes, mapping) -> list:
         judge_recall_check and judge_extra_check and judge_recall_check.passed and judge_extra_check.passed
         and _judge_strict_win(run, suite)
     )
-    strict_win = (label_strict_win and vote_strict_win) or judge_strict_win
+    # A judge win alone waives the cost tolerance only when votes:none means the judge is
+    # the suite's only signal; once votes are also collected, the waiver needs both halves
+    # of that pair (judge_strict_win AND vote_strict_win), matching the docstring above.
+    judge_waiver = judge_strict_win if suite.scoring.votes == "none" else (judge_strict_win and vote_strict_win)
+    strict_win = (label_strict_win and vote_strict_win) or judge_waiver
     hold_checks.append(_check_cost(run, suite, strict_win))
     return hold_checks
 

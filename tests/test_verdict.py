@@ -306,14 +306,58 @@ def test_judge_mode_skips_label_check():
     assert [c for c in result.checks if c.name == "labels"] == []
 
 
-def test_judge_strict_win_waives_cost_tolerance():
+def test_judge_strict_win_waives_cost_tolerance_when_suite_has_no_votes():
     # candidate strictly beats incumbent on recall and has no more extra findings, at 2x cost.
+    # scoring.votes is "none": the judge signal is the only pair this suite has, so it alone
+    # waives the cost tolerance.
     items = [
         _judge_item(f"r{i}", ["p1"], ["p1", "p2"], inc_cost=0.01, cand_cost=0.02) for i in range(6)
     ]
     run = _judge_run(items)
-    s = FakeSuite(labels="judge", min_items=6, cost_tol=0.25)
+    s = FakeSuite(labels="judge", votes="none", min_items=6, cost_tol=0.25)
     result = verdict.decide(run, s)
+    cost_check = [c for c in result.checks if c.name == "cost"][0]
+    assert cost_check.passed
+    assert result.verdict == "RECOMMEND"
+
+
+def test_judge_strict_win_alone_does_not_waive_when_suite_collects_votes():
+    # Same judge strict win as above, but this suite also collects votes (votes: optional)
+    # and the actual vote tally is a tie, not a candidate strict win -- the judge signal alone
+    # must not waive the cost tolerance here; the docstring's "whichever pair of independent
+    # signals this suite has" means BOTH must agree when a vote signal exists.
+    items = [
+        _judge_item(f"r{i}", ["p1"], ["p1", "p2"], inc_cost=0.01, cand_cost=0.02) for i in range(6)
+    ]
+    run = _judge_run(items)
+    votes = {}
+    mapping = {}
+    outcomes = ["A"] * 3 + ["B"] * 3
+    for i, outcome in enumerate(outcomes):
+        votes[f"r{i}"] = {"vote": outcome, "note": ""}
+        mapping[f"r{i}"] = {"A": "candidate", "B": "incumbent"}
+    s = FakeSuite(labels="judge", votes="optional", min_items=6, cost_tol=0.25)
+    result = verdict.decide(run, s, votes=votes, mapping=mapping)
+    cost_check = [c for c in result.checks if c.name == "cost"][0]
+    assert not cost_check.passed
+    assert result.verdict == "HOLD"
+
+
+def test_judge_strict_win_plus_vote_strict_win_waives_cost_tolerance():
+    # Same judge strict win, suite collects votes, and the candidate also strictly wins the
+    # vote tally -- both halves of the pair agree, so the waiver applies.
+    items = [
+        _judge_item(f"r{i}", ["p1"], ["p1", "p2"], inc_cost=0.01, cand_cost=0.02) for i in range(6)
+    ]
+    run = _judge_run(items)
+    votes = {}
+    mapping = {}
+    outcomes = ["A"] * 4 + ["B"] * 2
+    for i, outcome in enumerate(outcomes):
+        votes[f"r{i}"] = {"vote": outcome, "note": ""}
+        mapping[f"r{i}"] = {"A": "candidate", "B": "incumbent"}
+    s = FakeSuite(labels="judge", votes="optional", min_items=6, cost_tol=0.25)
+    result = verdict.decide(run, s, votes=votes, mapping=mapping)
     cost_check = [c for c in result.checks if c.name == "cost"][0]
     assert cost_check.passed
     assert result.verdict == "RECOMMEND"
