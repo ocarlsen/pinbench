@@ -9,7 +9,7 @@ class FakeSuite:
 
     def __init__(
         self, labels="none", votes="optional", min_items=10, label_tol=0.0, cost_tol=0.25, normalize=None,
-        require_votes_when_unlabeled=False,
+        require_votes_when_unlabeled=False, recall_tol=0.0, extra_tol=0.5,
     ):
         self.scoring = suite_mod.Scoring(labels=labels, normalize=normalize or NORM, votes=votes)
         self.policy = suite_mod.Policy(
@@ -17,6 +17,8 @@ class FakeSuite:
             label_tolerance_points=label_tol,
             cost_tolerance=cost_tol,
             require_votes_when_unlabeled=require_votes_when_unlabeled,
+            recall_tolerance_points=recall_tol,
+            extra_tolerance=extra_tol,
         )
 
 
@@ -220,3 +222,98 @@ def test_rule_text_resolution_uses_this_runs_n_not_min_items():
     assert "at least 10 completed items" in result.rule_text
     assert "13 items can show a large regression" in result.rule_text
     assert "1/n = 7.7 points" in result.rule_text
+
+
+def _judge_item(item_id, inc_hit, cand_hit, points=("p1", "p2"), inc_extra=0, cand_extra=0, inc_err=None, cand_err=None, inc_cost=0.01, cand_cost=0.01):
+    return {
+        "id": item_id,
+        "rubric_points": [{"id": p, "description": p} for p in points],
+        "incumbent": {"output": "out", "error": None, "cost_usd": inc_cost, "latency_ms": 100},
+        "candidate": {"output": "out", "error": None, "cost_usd": cand_cost, "latency_ms": 100},
+        "judge": {
+            "call_order": ["incumbent", "candidate"],
+            "incumbent": {"hit": inc_hit, "extra": inc_extra, "notes": "", "error": inc_err},
+            "candidate": {"hit": cand_hit, "extra": cand_extra, "notes": "", "error": cand_err},
+        },
+    }
+
+
+def _judge_run(items, stopped_early=False):
+    return {"items_completed": len(items), "items_total": len(items), "stopped_early": stopped_early, "items": items}
+
+
+def test_judge_errors_incomplete():
+    items = [_judge_item(f"r{i}", ["p1"], ["p1"]) for i in range(6)]
+    items[0]["judge"]["candidate"]["error"] = "malformed judge JSON: boom"
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6)
+    result = verdict.decide(run, s)
+    assert result.verdict == "INCOMPLETE"
+    judge_errors_check = [c for c in result.checks if c.name == "judge_errors"][0]
+    assert not judge_errors_check.passed
+    assert "boom" in judge_errors_check.detail
+
+
+def test_judge_recall_pass_and_recommend():
+    items = [_judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"]) for i in range(6)]
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6)
+    result = verdict.decide(run, s)
+    recall_check = [c for c in result.checks if c.name == "judge_recall"][0]
+    assert recall_check.passed
+    assert "100.0%" in recall_check.detail
+    assert result.verdict == "RECOMMEND"
+
+
+def test_judge_recall_fail_holds():
+    items = [_judge_item(f"r{i}", ["p1", "p2"], ["p1"]) for i in range(6)]  # candidate misses p2 every time
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6)
+    result = verdict.decide(run, s)
+    recall_check = [c for c in result.checks if c.name == "judge_recall"][0]
+    assert not recall_check.passed
+    assert result.verdict == "HOLD"
+
+
+def test_judge_extra_fail_holds_even_with_full_recall():
+    items = [
+        _judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"], inc_extra=0, cand_extra=3) for i in range(6)
+    ]
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6, extra_tol=0.5)
+    result = verdict.decide(run, s)
+    extra_check = [c for c in result.checks if c.name == "judge_extra"][0]
+    assert not extra_check.passed
+    assert result.verdict == "HOLD"
+
+
+def test_judge_extra_within_tolerance_passes():
+    items = [
+        _judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"], inc_extra=1, cand_extra=1) for i in range(6)
+    ]
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6, extra_tol=0.5)
+    result = verdict.decide(run, s)
+    extra_check = [c for c in result.checks if c.name == "judge_extra"][0]
+    assert extra_check.passed
+
+
+def test_judge_mode_skips_label_check():
+    items = [_judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"]) for i in range(6)]
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6)
+    result = verdict.decide(run, s)
+    assert [c for c in result.checks if c.name == "labels"] == []
+
+
+def test_judge_strict_win_waives_cost_tolerance():
+    # candidate strictly beats incumbent on recall and has no more extra findings, at 2x cost.
+    items = [
+        _judge_item(f"r{i}", ["p1"], ["p1", "p2"], inc_cost=0.01, cand_cost=0.02) for i in range(6)
+    ]
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6, cost_tol=0.25)
+    result = verdict.decide(run, s)
+    cost_check = [c for c in result.checks if c.name == "cost"][0]
+    assert cost_check.passed
+    assert result.verdict == "RECOMMEND"

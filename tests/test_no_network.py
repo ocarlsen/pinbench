@@ -1,6 +1,7 @@
 """Proves the full CLI pipeline never opens a socket: socket.socket is patched to raise,
 and every command still runs end to end against the fake provider."""
 
+import json
 import socket
 
 import pytest
@@ -135,3 +136,77 @@ items:
         ]
     )
     assert rc == 0
+
+
+def test_judge_suite_plan_and_run_never_touch_network(tmp_path, fake_adapter, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    prices_path = _write(
+        tmp_path / "prices.yaml",
+        """\
+version: 1
+checked: 2026-10-26
+models:
+  gpt-4o-mini: {input: 0.15, output: 0.60, source: "https://x"}
+  gpt-5-mini: {input: 0.25, output: 2.00, source: "https://y"}
+  gpt-5-nano: {input: 0.05, output: 0.40, source: "https://z"}
+""",
+    )
+    suite_path = _write(
+        tmp_path / "judge_suite.yaml",
+        """\
+version: 1
+name: review
+task: "Review this for defects."
+max_output_tokens: 16
+scoring:
+  labels: judge
+policy:
+  min_items: 2
+judge:
+  model: gpt-5-nano
+  max_output_tokens: 32
+  rubric: "grade strictly"
+items:
+  - id: q01
+    input: "Q1?"
+    rubric_points:
+      - id: p1
+        description: "point one"
+  - id: q02
+    input: "Q2?"
+    rubric_points:
+      - id: p2
+        description: "point two"
+""",
+    )
+    state_dir = tmp_path / ".pinbench"
+
+    rc = cli.main(
+        [
+            "plan", str(suite_path), "--incumbent", "gpt-5-mini", "--candidate", "gpt-4o-mini",
+            "--cap", "5.0", "--prices", str(prices_path), "--state", str(state_dir),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "judge" in out
+    assert "gpt-5-nano" in out
+
+    rc = cli.main(
+        [
+            "run", str(suite_path), "--incumbent", "gpt-5-mini", "--candidate", "gpt-4o-mini",
+            "--cap", "5.0", "--prices", str(prices_path), "--state", str(state_dir), "--name", "jr1",
+        ]
+    )
+    assert rc == 0
+    on_disk = json.loads((state_dir / "runs" / "jr1" / "run.json").read_text())
+    assert on_disk["judge_model"] == "gpt-5-nano"
+    assert "judge" in on_disk["spent_usd"]
+    # 2 items x 2 arms (suite calls) + 2 items x 2 arms (judge calls) = 8
+    assert fake_adapter.call_count == 8
+
+    rc = cli.main(["report", "jr1", "--state", str(state_dir), "--format", "text"])
+    assert rc == 0
+    report_text = capsys.readouterr().out
+    assert "Judge: gpt-5-nano" in report_text
