@@ -66,7 +66,9 @@ def test_config_command_walks_up_to_find_pinbench_yaml(tmp_path, monkeypatch, ca
     assert rc == 0
     out = capsys.readouterr().out
     assert "cap_usd: 0.75  (source: config)" in out
-    assert str(tmp_path / "pinbench.yaml") in out
+    # Printed relative to the cwd, never as a machine-specific absolute path.
+    assert "config file: ../../pinbench.yaml" in out
+    assert str(tmp_path) not in out
 
 
 def test_config_command_explicit_flag_overrides_walk_up(tmp_path, monkeypatch, capsys):
@@ -183,11 +185,38 @@ def test_report_header_names_config_path_and_hash(tmp_path, monkeypatch, fake_ad
     rc = cli.main(["report", "r1", "--state", str(state_dir)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert f"Config: {config_path}" in out
+    assert "Config: pinbench.yaml  (sha256:" in out
+    # report.md is what `bump` commits: no absolute path may reach it or run.json.
+    assert str(tmp_path) not in out
 
     run_json = json.loads((state_dir / "runs" / "r1" / "run.json").read_text())
-    assert run_json["effective_config"]["config_path"] == str(config_path)
+    assert run_json["effective_config"]["config_path"] == "pinbench.yaml"
     assert run_json["effective_config"]["config_hash"].startswith("sha256:")
+    assert config_path.is_file()
+
+
+def test_config_sourced_paths_persist_relative_to_cwd(tmp_path, monkeypatch, fake_adapter, capsys):
+    """A paths entry is resolved against pinbench.yaml's directory, then recorded relative
+    to the cwd: usable from here, and free of any absolute local path in run.json."""
+    monkeypatch.chdir(tmp_path)
+    suite_path = _suite(tmp_path)
+    _prices(tmp_path)
+    _write(tmp_path / "pinbench.yaml", "cap_usd: 1.0\npaths:\n  prices: prices.yaml\n  runs: state\n")
+    rc = cli.main(["run", str(suite_path), "--incumbent", "gpt-5-mini", "--candidate", "gpt-4o-mini", "--name", "r1"])
+    assert rc == 0, capsys.readouterr().err
+    run_json = json.loads((tmp_path / "state" / "runs" / "r1" / "run.json").read_text())
+    paths = run_json["effective_config"]["paths"]
+    assert paths["prices"] == {"value": "prices.yaml", "source": "config"}
+    assert paths["runs"] == {"value": "state", "source": "config"}
+    assert str(tmp_path) not in json.dumps(run_json["effective_config"])
+
+
+def test_config_command_malformed_yaml_refused(tmp_path, monkeypatch, capsys):
+    bad = _write(tmp_path / "bad.yaml", "cap_usd: [unclosed\n")
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["config", "--config", str(bad)])
+    assert rc == 1
+    assert "refused: " in capsys.readouterr().err
 
 
 def test_report_reloads_suite_using_runs_own_recorded_judge_defaults(tmp_path, monkeypatch, fake_adapter, capsys):

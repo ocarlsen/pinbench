@@ -259,7 +259,8 @@ one without saying so.
 | `pinbench config [--suite SUITE]` | print the effective settings and where each one came from |
 
 Every command above also takes `--config PATH` (see "Configuration"); `plan`/`run` take
-`--prices`/`--state`, and `pins`/`watch`/`bump` take `--pins`, each resolved the same way.
+`--prices`, `pins`/`watch`/`bump` take `--pins`, and every command that reads or writes
+run state takes `--state`, each resolved the same way.
 `--cap` on `plan`/`run` is no longer always required at the command line -- it still has to
 come from *somewhere* (see "Configuration"), but that can be the suite or `pinbench.yaml`.
 
@@ -318,7 +319,8 @@ policy:
 
 `incumbent`/`candidate` are deliberately NOT a config key: which two models are being
 compared is a choice made deliberately, per run, never defaulted by a file. An unknown
-top-level or nested key, or a value of the wrong type, refuses with the key and value
+top-level or nested key, a value of the wrong type, or an out-of-range value (a cap at or
+below zero, a negative tolerance, `min_items` under 1) refuses with the key and value
 named -- never a silent fallback to the built-in default.
 
 Every setting pinbench.yaml can set follows the same precedence, applied the same way
@@ -335,13 +337,17 @@ A `paths` value from `pinbench.yaml` is resolved relative to *that file's own di
 so the same `pinbench.yaml` behaves the same regardless of which directory you run
 `pinbench` from; a `--prices`/`--state`/`--pins` flag or a built-in default path is left
 exactly as given (relative to your current directory, same as before this feature existed).
+Wherever a config-resolved path or the config file's own location is printed or persisted
+(`pinbench config`, `run.json`, the report header), it is written relative to your current
+directory, so a `report.md` that `bump` commits never carries an absolute path from one
+machine.
 
 `pinbench config [--suite SUITE]` prints every effective setting and which tier it came
 from -- pass `--suite` to also see how that suite's own `cap_usd`/`judge`/`policy` fold in:
 
 ```
 $ pinbench config --suite examples/suites/review.yaml
-config file: /path/to/pinbench.yaml
+config file: pinbench.yaml
 config hash: sha256:...
 cap_usd: 0.5  (source: config)
 judge:
@@ -349,7 +355,7 @@ judge:
   model: 'claude-opus-5-5'  (source: suite)
   rubric: '...'  (source: suite)
 paths:
-  pins: /path/to/examples/pins.yaml  (source: config)
+  pins: examples/pins.yaml  (source: config)
   ...
 policy:
   ...

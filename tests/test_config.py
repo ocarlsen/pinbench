@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from pinbench import config
@@ -73,6 +75,36 @@ def test_load_cap_usd_bool_refused(tmp_path):
     path = _write(tmp_path / "pinbench.yaml", "cap_usd: true\n")
     with pytest.raises(config.ConfigError, match="cap_usd"):
         config.load(path)
+
+
+def test_load_cap_usd_must_be_positive(tmp_path):
+    for text in ("cap_usd: 0\n", "cap_usd: -1\n"):
+        path = _write(tmp_path / "pinbench.yaml", text)
+        with pytest.raises(config.ConfigError, match="cap_usd=.*greater than zero"):
+            config.load(path)
+
+
+def test_load_malformed_yaml_refused(tmp_path):
+    path = _write(tmp_path / "pinbench.yaml", "cap_usd: [unclosed\n")
+    with pytest.raises(config.ConfigError, match="not valid YAML"):
+        config.load(path)
+
+
+def test_load_judge_max_output_tokens_must_be_positive(tmp_path):
+    path = _write(tmp_path / "pinbench.yaml", "judge:\n  max_output_tokens: 0\n")
+    with pytest.raises(config.ConfigError, match="max_output_tokens=0.*at least 1"):
+        config.load(path)
+
+
+def test_load_policy_negative_or_zero_min_items_refused(tmp_path):
+    for text, key in (
+        ("policy:\n  min_items: 0\n", "min_items=0"),
+        ("policy:\n  max_truncated: -1\n", "max_truncated=-1"),
+        ("policy:\n  cost_tolerance: -0.5\n", "cost_tolerance=-0.5"),
+    ):
+        path = _write(tmp_path / "pinbench.yaml", text)
+        with pytest.raises(config.ConfigError, match=key):
+            config.load(path)
 
 
 def test_load_judge_unknown_key_refused(tmp_path):
@@ -196,4 +228,6 @@ def test_resolve_paths_config_value_relative_to_config_file(tmp_path):
     resolved = config.resolve_paths({}, cfg)
     value, source = resolved["prices"]
     assert source == "config"
-    assert value == str((subdir / "my-prices.yaml").resolve())
+    assert Path(value).resolve() == (subdir / "my-prices.yaml").resolve()
+    # Expressed relative to the cwd, so the value never carries an absolute local path.
+    assert not Path(value).is_absolute()

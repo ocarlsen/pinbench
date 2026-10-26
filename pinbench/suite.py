@@ -154,12 +154,12 @@ def _parse_judge(raw_judge, labels: str, defaults: Optional[dict] = None) -> Opt
     if labels != "judge":
         return None
     raw_judge = raw_judge or {}
-    base = defaults or {"model": None, "max_output_tokens": 1024, "rubric": None}
-    model = raw_judge.get("model", base.get("model"))
-    rubric = raw_judge.get("rubric", base.get("rubric"))
+    base = defaults or {**config_mod.BUILTIN_DEFAULTS["judge"], "model": None}
+    model = raw_judge.get("model", base["model"])
+    rubric = raw_judge.get("rubric", base["rubric"])
     if not model or not rubric:
         raise SuiteError("scoring.labels is 'judge' but suite has no judge.model / judge.rubric")
-    max_output_tokens = raw_judge.get("max_output_tokens", base.get("max_output_tokens", 1024))
+    max_output_tokens = raw_judge.get("max_output_tokens", base["max_output_tokens"])
     return JudgeConfig(model=model, rubric=rubric, max_output_tokens=int(max_output_tokens))
 
 
@@ -228,9 +228,9 @@ def _parse_cap_usd(raw, path) -> Optional[float]:
     if "cap_usd" not in raw:
         return None
     try:
-        return float(raw["cap_usd"])
-    except (TypeError, ValueError) as exc:
-        raise SuiteError(f"{path}: cap_usd={raw['cap_usd']!r} must be a number") from exc
+        return config_mod.check_cap_usd(raw["cap_usd"])
+    except config_mod.ConfigError as exc:
+        raise SuiteError(f"{path}: {exc}") from exc
 
 
 def load(path, judge_defaults: Optional[dict] = None, policy_defaults: Optional[dict] = None) -> Suite:

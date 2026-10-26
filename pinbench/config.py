@@ -18,6 +18,7 @@ compared is a choice made deliberately, per run, never defaulted by a file.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -87,9 +88,29 @@ def _hash_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def display_path(path) -> str:
+    """A path as it should appear in printed output and persisted artifacts (run.json, the
+    report header): relative to the current directory, so a report.md that `bump` commits
+    or a pasted `pinbench config` never carries a machine-specific absolute path. Falls
+    back to the path as given only when no relative form exists (a different drive)."""
+    try:
+        return os.path.relpath(path)
+    except ValueError:
+        return str(path)
+
+
 def _require_number(value, key):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{key}={value!r}: must be a number")
+
+
+def check_cap_usd(value, key="cap_usd") -> float:
+    """The one rule for a cost cap wherever it is set (pinbench.yaml or a suite): a number
+    greater than zero. Returns it as a float; raises ConfigError naming key=value."""
+    _require_number(value, key)
+    if value <= 0:
+        raise ConfigError(f"{key}={value!r}: must be greater than zero")
+    return float(value)
 
 
 def _validate_judge(raw_judge):
@@ -104,6 +125,8 @@ def _validate_judge(raw_judge):
         v = raw_judge["max_output_tokens"]
         if isinstance(v, bool) or not isinstance(v, int):
             raise ConfigError(f"judge.max_output_tokens={v!r}: must be an integer")
+        if v < 1:
+            raise ConfigError(f"judge.max_output_tokens={v!r}: must be at least 1")
 
 
 def _validate_paths(raw_paths):
@@ -126,9 +149,13 @@ def _validate_policy(raw_policy):
         elif k in _POLICY_INT_KEYS:
             if isinstance(v, bool) or not isinstance(v, int):
                 raise ConfigError(f"policy.{k}={v!r}: must be an integer")
+            if v < 0 or (k == "min_items" and v < 1):
+                raise ConfigError(f"policy.{k}={v!r}: must be at least {1 if k == 'min_items' else 0}")
         else:
             if isinstance(v, bool) or not isinstance(v, (int, float)):
                 raise ConfigError(f"policy.{k}={v!r}: must be a number")
+            if v < 0:
+                raise ConfigError(f"policy.{k}={v!r}: must not be negative")
 
 
 def load(path) -> Config:
@@ -136,7 +163,10 @@ def load(path) -> Config:
     reason on any unknown key or wrong type; never falls back silently."""
     path = Path(path)
     text = path.read_text()
-    raw = yaml.safe_load(text) or {}
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path}: not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: must be a mapping at the top level")
 
@@ -151,7 +181,7 @@ def load(path) -> Config:
         raise ConfigError(f"{path}: unknown top-level key(s): {sorted(unknown)}")
 
     if "cap_usd" in raw:
-        _require_number(raw["cap_usd"], "cap_usd")
+        check_cap_usd(raw["cap_usd"])
     if "judge" in raw:
         if not isinstance(raw["judge"], dict):
             raise ConfigError(f"{path}: judge must be a mapping")
@@ -199,9 +229,10 @@ def resolve_paths(cli_overrides: dict, config: Config):
     """{key: (value, source)} for pins/prices/suites/runs. `cli_overrides` maps a subset of
     those keys to an explicit CLI value (or omits/None for "not passed"). A path that comes
     from pinbench.yaml is resolved relative to THAT FILE's own directory, so the same
-    pinbench.yaml behaves the same regardless of which directory pinbench was run from; a
-    CLI-flag or built-in-default path is left exactly as given (relative to the caller's cwd,
-    same as before this module existed)."""
+    pinbench.yaml behaves the same regardless of which directory pinbench was run from,
+    then expressed relative to the current directory (see `display_path`) so the value is
+    usable from here AND safe to persist; a CLI-flag or built-in-default path is left
+    exactly as given (relative to the caller's cwd, same as before this module existed)."""
     config_paths = (config.raw.get("paths") or {}) if config else {}
     result = {}
     for key in _PATH_KEYS:
@@ -218,7 +249,7 @@ def resolve_paths(cli_overrides: dict, config: Config):
 def _relative_to_config(value: str, config: Config) -> str:
     if config.path is None or Path(value).is_absolute():
         return value
-    return str((config.path.parent / value).resolve())
+    return display_path((config.path.parent / value).resolve())
 
 
 def resolve_judge_defaults(config: Config):

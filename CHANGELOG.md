@@ -8,9 +8,12 @@ fallback block (model/max_output_tokens/rubric), `paths` (pins/prices/suites/run
 relative to the config file's own directory), and a `policy` fallback block. Precedence is
 CLI flag > suite > `pinbench.yaml` > built-in default, applied the same way by one set of
 resolvers (`config.py`) everywhere a setting is used; `incumbent`/`candidate` are refused as
-config keys (a model comparison is chosen per run, never defaulted). Every `run` records its
+config keys (a model comparison is chosen per run, never defaulted); a malformed file, a cap
+at or below zero, or a negative policy value refuses the same way. Every `run` records its
 full effective settings and provenance in `run.json`, including which config file (if any)
-and its content hash; `pinbench report`'s header names the config file and hash when one was
+and its content hash, with the config file and any config-resolved path written relative to
+the current directory so no absolute local path lands in `run.json` or the `report.md` that
+`bump` commits; `pinbench report`'s header names the config file and hash when one was
 used, and reloads the suite using the run's own recorded judge/policy fallback so a later
 report is unaffected by `pinbench.yaml` changing or disappearing. New `pinbench config
 [--suite SUITE]` command prints the effective settings and each one's source. The judge's

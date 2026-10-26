@@ -36,7 +36,9 @@ def load_suite_with_config(suite_path, config: config_mod.Config):
     policy_defaults, policy_sources = config_mod.resolve_policy_defaults(config)
     suite = suite_mod.load(suite_path, judge_defaults=judge_defaults, policy_defaults=policy_defaults)
     effective = {
-        "config_path": str(config.path) if config.path else None,
+        # Relative to the cwd at run time: run.json and the report header it feeds must not
+        # carry a machine-specific absolute path (report.md is what `bump` commits).
+        "config_path": config_mod.display_path(config.path) if config.path else None,
         "config_hash": config.content_hash,
         "judge_defaults": {"value": judge_defaults, "source": judge_sources},
         "policy_defaults": {"value": policy_defaults, "source": policy_sources},
@@ -82,7 +84,8 @@ def cmd_config(args):
 
     cap_usd, cap_source = config_mod.resolve_cap(None, suite.cap_usd if suite else None, config)
 
-    print(f"config file: {config.path if config.path else '(none found; using built-in defaults)'}")
+    config_file = config_mod.display_path(config.path) if config.path else "(none found; using built-in defaults)"
+    print(f"config file: {config_file}")
     if config.content_hash:
         print(f"config hash: {config.content_hash}")
     print(f"cap_usd: {cap_usd}  (source: {cap_source})")
