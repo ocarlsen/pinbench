@@ -1,7 +1,7 @@
 version: 1
 name: review
-task: "Review this for defects. Point out anything wrong; do not rewrite it."
-max_output_tokens: 300
+task: "Review this for defects. List each problem as one short bullet (at most five bullets); do not rewrite the code."
+max_output_tokens: 1200
 scoring:
   labels: judge
   votes: none
