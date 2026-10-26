@@ -210,3 +210,63 @@ items:
     assert rc == 0
     report_text = capsys.readouterr().out
     assert "Judge: gpt-5-nano" in report_text
+
+
+def test_run_warns_when_judge_never_called_for_an_entire_arm(tmp_path, fake_adapter, monkeypatch, capsys):
+    """When every item's incumbent output is truncated, the judge is skipped on that arm for
+    every item; `run` must print a loud, explicit warning rather than leaving a judge metric
+    that looks clean (0 data) pass silently."""
+    from pinbench import providers
+
+    monkeypatch.chdir(tmp_path)
+
+    prices_path = _write(
+        tmp_path / "prices.yaml",
+        """\
+version: 1
+checked: 2026-10-26
+models:
+  gpt-4o-mini: {input: 0.15, output: 0.60, source: "https://x"}
+  gpt-5-mini: {input: 0.25, output: 2.00, source: "https://y"}
+  gpt-5-nano: {input: 0.05, output: 0.40, source: "https://z"}
+""",
+    )
+    suite_path = _write(
+        tmp_path / "judge_suite.yaml",
+        """\
+version: 1
+name: review
+task: "Review this for defects."
+max_output_tokens: 16
+scoring:
+  labels: judge
+policy:
+  min_items: 1
+judge:
+  model: gpt-5-nano
+  max_output_tokens: 32
+  rubric: "grade strictly"
+items:
+  - id: q01
+    input: "Q1?"
+    rubric_points:
+      - id: p1
+        description: "point one"
+""",
+    )
+    state_dir = tmp_path / ".pinbench"
+    fake_adapter.set_reply(
+        "gpt-5-mini", "Q1?",
+        providers.Reply(output="cut off", input_tokens=5, output_tokens=16, latency_ms=1, error=None, stop_reason="max_tokens"),
+    )
+
+    rc = cli.main(
+        [
+            "run", str(suite_path), "--incumbent", "gpt-5-mini", "--candidate", "gpt-4o-mini",
+            "--cap", "5.0", "--prices", str(prices_path), "--state", str(state_dir), "--name", "jr2",
+        ]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "judge was never called for incumbent" in err
+    assert "all 1 item(s) skipped" in err

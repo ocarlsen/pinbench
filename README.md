@@ -163,9 +163,16 @@ The judge must answer in strict JSON, `{"hit": [ids], "extra": int, "notes": str
 rubric point ids it found satisfied, a count of other real findings beyond the rubric, and a
 one-line note. A reply that is not valid JSON, or whose `hit` names an id the item never
 declared, is a judge error for that item, counted and never guessed at -- same bucket as an
-arm that returned an HTTP error. Per arm, across the run: **recall** is hits over total rubric
-points, and **extra** is the mean "extra" count (a precision proxy: a model that hits every
-point by flagging everything in sight is not actually better). The judge's own calls are
+arm that returned an HTTP error. An arm's own reply never even reaches the judge when it
+errored, is empty, or was itself cut off by the output ceiling: that slot is recorded as
+`"skipped": "<reason>"` with zero cost and is excluded from recall, extra, and
+`judge_errors` alike, since grading a fragment that the truncation check already makes
+this item's run INCOMPLETE over would only spend money on an answer that can never count.
+`pinbench report` prints "judge calls: N judged, M skipped (truncated/error)" so a dip in
+judge spend reads as fewer calls made, not fewer calls that happened to pass. Per arm,
+across the run: **recall** is hits over total rubric points, and **extra** is the mean
+"extra" count (a precision proxy: a model that hits every point by flagging everything in
+sight is not actually better). The judge's own calls are
 estimated and metered against the same `--cap` as the arms (`pinbench plan` prints a third
 `judge` line), and refuse to self-judge: a suite whose judge id equals either arm's id is
 refused unless you pass `--allow-self-judge`.

@@ -106,3 +106,66 @@ def test_unblind_votes_unknown_item_id_refused():
 def test_unblind_votes_unknown_vote_value_refused():
     with pytest.raises(ValueError):
         scoring.unblind_votes({"q0": {"vote": "C"}}, {"q0": {"A": "candidate", "B": "incumbent"}})
+
+
+def _judge_run(judge_items):
+    """judge_items: list of (judge_dict_for_candidate_arm_or_None_meaning_skipped, points)."""
+    items = []
+    for i, (cand_judge, points) in enumerate(judge_items):
+        items.append(
+            {
+                "id": f"r{i}",
+                "rubric_points": [{"id": p, "description": p} for p in points],
+                "judge": {"call_order": ["incumbent", "candidate"], "candidate": cand_judge},
+            }
+        )
+    return {"items": items}
+
+
+def test_judge_recall_excludes_skipped_items_from_both_hits_and_points():
+    run = _judge_run(
+        [
+            ({"hit": ["p1"], "extra": 0, "notes": "", "error": None, "skipped": None}, ("p1", "p2")),
+            ({"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}, ("p1", "p2")),
+        ]
+    )
+    result = scoring.judge_recall(run, "candidate")
+    # Only the first (judged) item counts: 1 hit out of its 2 points. The skipped item's
+    # points and zero hits are excluded entirely, never counted as a miss.
+    assert result.hits == 1
+    assert result.points == 2
+
+
+def test_judge_extra_mean_excludes_skipped_items():
+    run = _judge_run(
+        [
+            ({"hit": [], "extra": 4, "notes": "", "error": None, "skipped": None}, ("p1",)),
+            ({"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm error"}, ("p1",)),
+        ]
+    )
+    # If the skipped item's extra=0 were counted, the mean would be (4+0)/2 = 2.0 instead.
+    assert scoring.judge_extra_mean(run, "candidate") == 4.0
+
+
+def test_judge_error_count_excludes_skipped():
+    run = _judge_run(
+        [
+            ({"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}, ("p1",)),
+        ]
+    )
+    assert scoring.judge_error_count(run) == 0
+
+
+def test_judge_skipped_and_judged_counts():
+    run = _judge_run(
+        [
+            ({"hit": ["p1"], "extra": 0, "notes": "", "error": None, "skipped": None}, ("p1",)),
+            ({"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}, ("p1",)),
+            ({"hit": [], "extra": 0, "notes": "", "error": "boom", "skipped": None}, ("p1",)),
+        ]
+    )
+    assert scoring.judge_skipped_count(run) == 1
+    assert scoring.judge_skipped_count(run, "candidate") == 1
+    assert scoring.judge_skipped_count(run, "incumbent") == 0
+    assert scoring.judge_judged_count(run) == 2  # the hit and the error, not the skip
+    assert scoring.judge_judged_count(run, "candidate") == 2

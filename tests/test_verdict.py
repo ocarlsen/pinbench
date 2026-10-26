@@ -361,3 +361,22 @@ def test_judge_strict_win_plus_vote_strict_win_waives_cost_tolerance():
     cost_check = [c for c in result.checks if c.name == "cost"][0]
     assert cost_check.passed
     assert result.verdict == "RECOMMEND"
+
+
+def test_truncated_arm_makes_run_incomplete_via_truncation_not_judge_errors():
+    # When one item's incumbent output was truncated, the judge is never called on it
+    # (judge.py skip_reason) so its judge record carries "skipped", not "error". The run
+    # must still go INCOMPLETE -- but via the truncation check, not judge_errors.
+    items = [_judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"]) for i in range(6)]
+    items[0]["incumbent"]["stop_reason"] = "max_tokens"
+    items[0]["judge"]["incumbent"] = {"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6)
+    result = verdict.decide(run, s)
+    assert result.verdict == "INCOMPLETE"
+    truncation_check = [c for c in result.checks if c.name == "truncation"][0]
+    assert not truncation_check.passed
+    judge_errors_checks = [c for c in result.checks if c.name == "judge_errors"]
+    # judge_errors is checked (and PASSES) before the truncation check trips the run
+    # INCOMPLETE; the skip must never register there as an error.
+    assert judge_errors_checks and judge_errors_checks[0].passed

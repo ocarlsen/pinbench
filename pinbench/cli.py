@@ -144,6 +144,12 @@ def cmd_run(args):
         )
     if record["items_completed"] < record["items_total"]:
         print("warning: not every item completed on both arms", file=sys.stderr)
+    # One loud line per arm where every judge call was skipped: otherwise a judge
+    # recall/extra built on zero actual calls for that arm looks like a clean measurement.
+    if record.get("judge_model"):
+        for arm in scoring_mod.judge_arms_fully_skipped(record):
+            n = scoring_mod.judge_skipped_count(record, arm)
+            print(f"warning: judge was never called for {arm} (all {n} item(s) skipped: truncated/error)", file=sys.stderr)
     return 0
 
 

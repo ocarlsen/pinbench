@@ -5,7 +5,11 @@ from latency stats; refuses an unknown normalize step name; refuses to call a tr
 output "complete" without saying so (is_truncated/truncated_count); refuses to count a
 rubric point an item never declared, or to let a judge error on an item silently drop that
 item's rubric points from the recall denominator (a judge error makes the run INCOMPLETE,
-scored separately, never averaged away).
+scored separately, never averaged away). Refuses to let a judge call that was never made
+(skipped because the arm's own output errored, was empty, or was truncated) count as either
+a hit or a miss in judge_recall/judge_extra_mean, or as a judge error in judge_error_count --
+a skip is a different thing from a judge that was called and then errored, and the
+truncation check already makes that item's run INCOMPLETE on its own.
 """
 
 from __future__ import annotations
@@ -139,15 +143,20 @@ def judge_recall(run: dict, arm: str) -> JudgeRecall:
     """Total rubric points hit for `arm` over total rubric points declared, across every
     item -- an item whose judge call errored contributes its points to the denominator but
     zero hits (the error itself fails the run via judge_error_count, this just keeps the
-    recall math honest rather than silently shrinking n).
+    recall math honest rather than silently shrinking n). An item whose judge call was
+    SKIPPED (the arm's own output errored, was empty, or was truncated -- judge.py never
+    called the judge at all) is excluded entirely: it is neither a hit nor a miss, since the
+    truncation/error check already makes the run INCOMPLETE on its own.
     """
     hits = 0
     points = 0
     for item in run["items"]:
-        item_points = len(item.get("rubric_points") or [])
-        points += item_points
         judge = item.get("judge") or {}
         arm_result = judge.get(arm)
+        if arm_result and arm_result.get("skipped"):
+            continue
+        item_points = len(item.get("rubric_points") or [])
+        points += item_points
         if arm_result and not arm_result.get("error"):
             hits += len(arm_result.get("hit") or [])
     return JudgeRecall(hits=hits, points=points)
@@ -155,14 +164,14 @@ def judge_recall(run: dict, arm: str) -> JudgeRecall:
 
 def judge_extra_mean(run: dict, arm: str) -> Optional[float]:
     """Mean "extra" (spurious findings) count over items the judge actually scored for this
-    arm; None when nothing was scored. Items with a judge error are excluded, same as a
-    latency stat excludes an arm error.
+    arm; None when nothing was scored. Items with a judge error, or whose judge call was
+    skipped (see judge_recall), are excluded, same as a latency stat excludes an arm error.
     """
     values = []
     for item in run["items"]:
         judge = item.get("judge") or {}
         arm_result = judge.get(arm)
-        if arm_result and not arm_result.get("error"):
+        if arm_result and not arm_result.get("error") and not arm_result.get("skipped"):
             values.append(arm_result.get("extra", 0))
     if not values:
         return None
@@ -170,13 +179,59 @@ def judge_extra_mean(run: dict, arm: str) -> Optional[float]:
 
 
 def judge_error_count(run: dict) -> int:
-    """Count of (item, arm) judge calls that errored, across both arms."""
+    """Count of (item, arm) judge calls that errored, across both arms. A skipped slot
+    (never called at all) carries error=None, so it is never counted here -- a skip is not
+    a judge error, it is the judge refusing to spend on an answer that was already doomed.
+    """
     count = 0
     for item in run["items"]:
         judge = item.get("judge") or {}
         for arm in ("incumbent", "candidate"):
             arm_result = judge.get(arm)
             if arm_result and arm_result.get("error"):
+                count += 1
+    return count
+
+
+def judge_skipped_count(run: dict, arm: Optional[str] = None) -> int:
+    """Count of (item, arm) judge slots recorded as skipped -- the judge was never called
+    because that arm's own output errored, was empty, or was truncated. `arm` narrows the
+    count to one side; omitted, it counts both.
+    """
+    arms = (arm,) if arm else ("incumbent", "candidate")
+    count = 0
+    for item in run["items"]:
+        judge = item.get("judge") or {}
+        for a in arms:
+            arm_result = judge.get(a)
+            if arm_result and arm_result.get("skipped"):
+                count += 1
+    return count
+
+
+def judge_arms_fully_skipped(run: dict) -> list:
+    """Arm names (subset of ["incumbent", "candidate"]) where EVERY item's judge call was
+    skipped and none was actually judged -- that arm's judge metrics have no data at all,
+    not just degraded data, and a caller should say so loudly rather than let it look clean.
+    """
+    total = run.get("items_total") or 0
+    if not total:
+        return []
+    return [arm for arm in ("incumbent", "candidate") if judge_judged_count(run, arm) == 0 and judge_skipped_count(run, arm) == total]
+
+
+def judge_judged_count(run: dict, arm: Optional[str] = None) -> int:
+    """Count of (item, arm) judge slots where the judge was actually called (whether it
+    then scored cleanly or errored) -- the complement of judge_skipped_count among slots
+    that were attempted at all (present in the item's "judge" dict).
+    """
+    arms = (arm,) if arm else ("incumbent", "candidate")
+    count = 0
+    for item in run["items"]:
+        judge = item.get("judge") or {}
+        for a in arms:
+            arm_result = judge.get(a)
+            if arm_result and not arm_result.get("skipped"):
                 count += 1
     return count
 

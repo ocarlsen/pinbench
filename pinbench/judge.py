@@ -7,7 +7,12 @@ which arm produced it. Refuses to guess at a malformed judge reply: a reply that
 strict JSON, or whose "hit" ids are not a subset of this item's rubric_points, is a judge
 error for that item, counted, never silently dropped or partially parsed. Refuses to let
 two reports with different judge ids or different rubric text be compared as if they were
-the same measurement.
+the same measurement. Refuses to call the judge at all on an arm's reply that errored, is
+empty, or was cut off by the output ceiling (scoring.TRUNCATION_STOP_REASONS) -- the
+truncation/error check already makes that item's run INCOMPLETE, so grading the fragment
+would only spend a judge call on an answer that can never count; that arm's record instead
+carries "skipped": "<reason>" and cost_usd 0.0 (scoring.py excludes it from judge_recall,
+judge_extra_mean and judge_error_count).
 """
 
 from __future__ import annotations
@@ -54,6 +59,9 @@ class JudgeOutcome:
     extra: int
     notes: str
     error: Optional[str] = None
+    # Set instead of calling the judge at all, when the arm's own reply errored, was empty,
+    # or was truncated. Mutually exclusive with `error`: a skip is never also a judge error.
+    skipped: Optional[str] = None
 
 
 def prompt_hash(rubric: str) -> str:
@@ -152,28 +160,60 @@ def judge_output(judge_id, item, suite, output_text, api_key, params=None):
 
 
 def _outcome_record(outcome: JudgeOutcome, cost_usd: Optional[float]) -> dict:
-    return {"hit": outcome.hit, "extra": outcome.extra, "notes": outcome.notes, "error": outcome.error, "cost_usd": cost_usd}
+    return {
+        "hit": outcome.hit,
+        "extra": outcome.extra,
+        "notes": outcome.notes,
+        "error": outcome.error,
+        "cost_usd": cost_usd,
+        "skipped": outcome.skipped,
+    }
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, outputs: dict) -> tuple:
+def skip_reason(reply) -> Optional[str]:
+    """Why the judge must never be called on this arm's reply, or None to proceed.
+
+    Checked BEFORE spending anything: an arm reply that errored, has no output (empty or
+    None), or was cut off by the output ceiling is never sent to the judge -- grading it
+    would spend a judge call on an answer that scoring.is_truncated / the error itself
+    already makes this item's run INCOMPLETE over.
+    """
+    if reply.error is not None:
+        return "skipped: arm error"
+    if not reply.output:
+        return "skipped: arm output empty"
+    if reply.stop_reason in scoring_mod.TRUNCATION_STOP_REASONS:
+        return "skipped: arm output truncated"
+    return None
+
+
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
-    `outputs` is {"incumbent": text, "candidate": text}; both must be present (the caller
-    only invokes this once both arms produced real output). Returns (record, stopped_early):
-    `record` has "call_order" plus whichever of "incumbent"/"candidate" were judged before
-    the cap stopped it -- a partial record is still returned, never discarded, same as a
-    partial run.
+    `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
+    must be present (the caller only invokes this once both arms were attempted). An arm
+    whose reply trips `skip_reason` is never sent to the judge: its record carries
+    "skipped": "<reason>", cost_usd 0.0, and no meter check/charge happens for it at all.
+    Returns (record, stopped_early): `record` has "call_order" plus whichever of
+    "incumbent"/"candidate" were judged or skipped before the cap stopped it -- a partial
+    record is still returned, never discarded, same as a partial run.
     """
     order = pick_call_order()
     record = {"call_order": order}
     for arm in order:
+        reply = arm_replies[arm]
+        reason = skip_reason(reply)
+        if reason is not None:
+            outcome = JudgeOutcome(hit=[], extra=0, notes="", error=None, skipped=reason)
+            record[arm] = _outcome_record(outcome, 0.0)
+            continue
         est = cost_mod.estimate_judge_call_cost(suite, item, judge_price)
         if not meter.check(est):
             return record, True
         # The judge model's own request_defaults (prices.yaml) travel with it, same as an
         # arm's do: a judge that needs a model-specific thinking/effort shape gets it.
-        outcome, reply = judge_output(judge_id, item, suite, outputs[arm], api_key, params=judge_price.request_defaults)
-        cost_usd = meter.charge(cost_mod.actual_call_cost(reply, judge_price), est)
+        outcome, judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults)
+        cost_usd = meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price), est)
         record[arm] = _outcome_record(outcome, cost_usd)
     return record, False
 

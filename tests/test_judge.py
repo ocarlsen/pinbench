@@ -155,11 +155,13 @@ def test_run_judge_stage_judges_both_arms_and_charges_meter(monkeypatch):
 
     meter = cost.CostMeter(cap_usd=1.0)
     price = _price()
-    outputs = {"incumbent": "incumbent output text", "candidate": "candidate output text"}
-    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, outputs)
+    arm_replies = {"incumbent": _reply(output="incumbent output text"), "candidate": _reply(output="candidate output text")}
+    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, arm_replies)
 
     assert stopped_early is False
     assert set(record["call_order"]) == {"incumbent", "candidate"}
+    assert record["incumbent"]["skipped"] is None
+    assert record["candidate"]["skipped"] is None
     assert len(record["incumbent"]["hit"]) + len(record["candidate"]["hit"]) == 3  # one call hit 1, the other hit 2
     assert meter.spent_usd > 0
     assert len(adapter.calls) == 2
@@ -172,13 +174,73 @@ def test_run_judge_stage_stops_early_when_cap_hit(monkeypatch):
 
     price = _price(input_rate=1_000_000.0, output_rate=1_000_000.0)  # first call alone exceeds the cap
     meter = cost.CostMeter(cap_usd=0.0001)
-    outputs = {"incumbent": "incumbent output text", "candidate": "candidate output text"}
-    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, outputs)
+    arm_replies = {"incumbent": _reply(output="incumbent output text"), "candidate": _reply(output="candidate output text")}
+    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, arm_replies)
 
     assert stopped_early is True
     judged_arms = [arm for arm in ("incumbent", "candidate") if arm in record]
     assert len(judged_arms) == 0  # the very first call already exceeds the cap
     assert len(adapter.calls) == 0
+
+
+def test_skip_reason_none_for_a_clean_reply():
+    assert judge.skip_reason(_reply(output="a real finished answer")) is None
+
+
+def test_skip_reason_for_an_errored_reply():
+    assert judge.skip_reason(_reply(error="HTTP 500: boom", status_code=500)) == "skipped: arm error"
+
+
+def test_skip_reason_for_an_empty_reply():
+    assert judge.skip_reason(_reply(output="")) == "skipped: arm output empty"
+    assert judge.skip_reason(_reply(output=None)) == "skipped: arm output empty"
+
+
+def test_skip_reason_for_a_truncated_reply():
+    reply = providers.Reply(output="cut off mid-sent", input_tokens=10, output_tokens=300, latency_ms=5, stop_reason="max_tokens")
+    assert judge.skip_reason(reply) == "skipped: arm output truncated"
+
+
+def test_run_judge_stage_never_calls_the_judge_on_a_truncated_arm(monkeypatch):
+    # The regression this guards: a truncated arm output used to still be sent to the judge,
+    # spending a real judge call on a review that scoring.is_truncated already makes the
+    # run's verdict INCOMPLETE over.
+    s, item = _judge_suite()
+    adapter = _FakeJudgeAdapter([_reply(output=json.dumps({"hit": ["bug-a"], "extra": 0, "notes": "fine"}))])
+    monkeypatch.setattr(providers, "route", lambda model_id: adapter)
+
+    meter = cost.CostMeter(cap_usd=1.0)
+    price = _price()
+    truncated_reply = providers.Reply(
+        output="cut off mid-sent", input_tokens=10, output_tokens=300, latency_ms=5, stop_reason="max_tokens"
+    )
+    arm_replies = {"incumbent": truncated_reply, "candidate": _reply(output="a real finished answer")}
+    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, arm_replies)
+
+    assert stopped_early is False
+    assert len(adapter.calls) == 1  # only the candidate's clean output was ever sent to the judge
+    assert record["incumbent"]["skipped"] == "skipped: arm output truncated"
+    assert record["incumbent"]["error"] is None
+    assert record["incumbent"]["cost_usd"] == 0.0
+    assert record["incumbent"]["hit"] == []
+    assert record["candidate"]["skipped"] is None
+    assert record["candidate"]["cost_usd"] > 0
+
+
+def test_run_judge_stage_never_calls_the_judge_on_an_errored_arm(monkeypatch):
+    s, item = _judge_suite()
+    adapter = _FakeJudgeAdapter([_reply(output=json.dumps({"hit": ["bug-a"], "extra": 0, "notes": "fine"}))])
+    monkeypatch.setattr(providers, "route", lambda model_id: adapter)
+
+    meter = cost.CostMeter(cap_usd=1.0)
+    price = _price()
+    errored_reply = _reply(error="HTTP 500: boom", status_code=500)
+    arm_replies = {"incumbent": errored_reply, "candidate": _reply(output="a real finished answer")}
+    record, stopped_early = judge.run_judge_stage(meter, "judge-model", price, "key", s, item, arm_replies)
+
+    assert len(adapter.calls) == 1
+    assert record["incumbent"]["skipped"] == "skipped: arm error"
+    assert record["incumbent"]["cost_usd"] == 0.0
 
 
 def test_prompt_hash_stable_and_sensitive_to_rubric_text():
@@ -244,6 +306,7 @@ def test_run_judge_stage_sends_the_judge_models_request_defaults(monkeypatch):
     monkeypatch.setattr(providers, "route", lambda model_id: _Adapter())
     price = prices.PriceRow(model="judge-model", input=1.0, output=2.0, source="https://x", request_defaults={"thinking": {"type": "disabled"}})
     meter = cost.CostMeter(cap_usd=100.0)
-    record, stopped = judge.run_judge_stage(meter, "judge-model", price, "k", s, item, {"incumbent": "a", "candidate": "b"})
+    arm_replies = {"incumbent": _reply(output="a"), "candidate": _reply(output="b")}
+    record, stopped = judge.run_judge_stage(meter, "judge-model", price, "k", s, item, arm_replies)
     assert stopped is False
     assert seen == [{"thinking": {"type": "disabled"}}, {"thinking": {"type": "disabled"}}]

@@ -4,7 +4,9 @@ Refuses to do: accept a votes.json with an unknown item id or vote value (scorin
 raises; report propagates that as a refusal, never a silent skip). For a judge-scored run,
 always prints the judge model id and its prompt hash in the header -- two runs are only the
 same measurement when both match (judge.assert_comparable), so the report states both rather
-than letting a reader assume.
+than letting a reader assume. For a judge-scored run, always states how many judge calls were
+actually judged vs skipped (truncated/error), so a drop in judge spend is never mistaken for
+a drop in judge calls that were graded.
 """
 
 from __future__ import annotations
@@ -58,6 +60,9 @@ def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
     )
     if run.get("judge_model") and "judge" in run.get("spent_usd", {}):
         lines.append(f"  of which judge: ${run['spent_usd']['judge']:.4f} spent, ${run['estimate_usd'].get('judge', 0.0):.4f} estimated")
+    judge_calls_line = _judge_calls_line(run)
+    if judge_calls_line:
+        lines.append(f"  {judge_calls_line}")
     for arm in ("incumbent", "candidate"):
         errs = scoring_mod.error_count(run, arm)
         if errs:
@@ -94,6 +99,9 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
         f"- Spend: ${run['spent_usd']['total']:.4f} of ${run['cap_usd']:.2f} cap "
         f"(estimate ${run['estimate_usd']['total']:.4f})"
     )
+    judge_calls_line = _judge_calls_line(run)
+    if judge_calls_line:
+        lines.append(f"- {judge_calls_line}")
     lines.append("")
     lines.append("## Checks")
     lines.append("")
@@ -121,6 +129,8 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "items_completed": run["items_completed"],
         "items_total": run["items_total"],
         "stopped_early": run.get("stopped_early", False),
+        "judge_calls_judged": scoring_mod.judge_judged_count(run) if run.get("judge_model") else None,
+        "judge_calls_skipped": scoring_mod.judge_skipped_count(run) if run.get("judge_model") else None,
         "spent_usd": run["spent_usd"],
         "estimate_usd": run["estimate_usd"],
         "verdict": result.verdict,
@@ -128,6 +138,18 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "rule": result.rule_text,
     }
     return json.dumps(payload, indent=2) + "\n"
+
+
+def _judge_calls_line(run: dict) -> Optional[str]:
+    """'judge calls: N judged, M skipped (truncated/error)' for a judge-scored run, else
+    None -- a skipped call is one judge.py never made because the arm's own output errored,
+    was empty, or was truncated, so N + M never overstates what was actually billed.
+    """
+    if not run.get("judge_model"):
+        return None
+    judged = scoring_mod.judge_judged_count(run)
+    skipped = scoring_mod.judge_skipped_count(run)
+    return f"judge calls: {judged} judged, {skipped} skipped (truncated/error)"
 
 
 def _ratio(a, b):

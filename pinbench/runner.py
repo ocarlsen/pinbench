@@ -127,13 +127,6 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _judge_ready_outputs(inc_reply, cand_reply) -> Optional[dict]:
-    """{"incumbent": text, "candidate": text} when both arms produced real output, else None."""
-    if inc_reply.output is None or cand_reply.output is None:
-        return None
-    return {"incumbent": inc_reply.output, "candidate": cand_reply.output}
-
-
 def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
     meter stops it. Never aborts a call in flight."""
@@ -167,14 +160,16 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
 
         judge_record = None
         if judge_ctx is not None:
-            outputs = _judge_ready_outputs(inc_reply, cand_reply)
-            if outputs is not None:
-                judge_record, judge_stopped = judge_mod.run_judge_stage(
-                    meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item, outputs
-                )
-                spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
-                if judge_stopped:
-                    stopped_early = True
+            # Both arms are handed to the judge stage regardless of whether either errored
+            # or was cut off -- judge.run_judge_stage (via judge.skip_reason) decides per arm
+            # whether to actually call the judge or just record "skipped", never the caller.
+            judge_record, judge_stopped = judge_mod.run_judge_stage(
+                meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
+                {"incumbent": inc_reply, "candidate": cand_reply},
+            )
+            spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
+            if judge_stopped:
+                stopped_early = True
 
         result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record))
         if judge_ctx is not None and stopped_early:
