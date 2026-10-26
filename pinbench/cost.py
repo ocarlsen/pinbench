@@ -2,7 +2,9 @@
 
 Refuses to do: fabricate a $0 cost for an unpriced model or a response with missing usage
 (missing usage is charged at the estimate, never at zero); refuses to let a run exceed its
-cap, checked before every single call, not just at the start.
+cap, checked before every single call, not just at the start. A judge model's calls are
+estimated and metered exactly like an arm's -- there is no separate, softer cap for judge
+spend.
 """
 
 from __future__ import annotations
@@ -105,13 +107,74 @@ def estimate_arm(suite, model_id: str, price, limit=None, state_dir=None, suite_
 class RunEstimate:
     incumbent: ArmEstimate
     candidate: ArmEstimate
+    judge: Optional[ArmEstimate] = None
 
     @property
     def total_usd(self) -> float:
-        return self.incumbent.cost_usd + self.candidate.cost_usd
+        total = self.incumbent.cost_usd + self.candidate.cost_usd
+        if self.judge is not None:
+            total += self.judge.cost_usd
+        return total
 
 
-def estimate_run(suite, incumbent_id, candidate_id, prices, limit=None, state_dir=None) -> RunEstimate:
+def _judge_char_estimate_input_tokens(suite, item) -> int:
+    """Input tokens for ONE judge call grading one arm's output on this item: the rubric,
+    this item's rubric point descriptions, the item input, and an assumed output the size
+    of the arm's own output ceiling -- the ceiling, not a guess, same conservatism as the
+    arm estimate above."""
+    rubric_points_chars = sum(len(p.description) for p in item.rubric_points)
+    chars = len(suite.judge.rubric) + rubric_points_chars + len(item.input) + suite.max_output_tokens * 4
+    return math.ceil(chars / CHARS_PER_TOKEN) + INPUT_TOKEN_PAD
+
+
+def estimate_judge_call_cost(suite, item, price) -> float:
+    """Cost of ONE judge call (grading one arm's output on one item). Raises ValueError if
+    price is None, same fail-closed rule as estimate_arm."""
+    if price is None:
+        raise ValueError(f"no price row for judge model '{suite.judge.model}'")
+    in_tok = _judge_char_estimate_input_tokens(suite, item)
+    out_tok = suite.judge.max_output_tokens
+    return in_tok * price.input / 1e6 + out_tok * price.output / 1e6
+
+
+def estimate_judge_run(suite, judge_id, price, limit=None) -> ArmEstimate:
+    """Estimate every judge call a run would make: two per item (one per arm's output)."""
+    if price is None:
+        raise ValueError(f"no price row for {judge_id}")
+    items = suite.items[:limit] if limit else suite.items
+    estimates = []
+    total = 0.0
+    for item in items:
+        cost_each = estimate_judge_call_cost(suite, item, price)
+        for arm in ("incumbent", "candidate"):
+            in_tok = _judge_char_estimate_input_tokens(suite, item)
+            estimates.append(
+                ItemEstimate(item_id=f"{item.id}:{arm}", input_tokens=in_tok, output_tokens=suite.judge.max_output_tokens, cost_usd=cost_each, measured=False)
+            )
+            total += cost_each
+    total *= ESTIMATE_HEADROOM
+    return ArmEstimate(model_id=judge_id, items=estimates, cost_usd=total, measured_count=0)
+
+
+def actual_call_cost(reply, price) -> Optional[float]:
+    """None means "charge the estimate instead" (an unknown outcome); never a fabricated $0.
+
+    A request that errored before generating (an HTTP 4xx: bad request, auth, not-found,
+    rate-limited) never produced billable output, so it costs $0 -- that is known, not
+    unknown. Any other error (a 5xx, a timeout, a dropped connection after the request was
+    sent) leaves the outcome unknown, so it is charged at the estimate, same as a 2xx reply
+    with missing usage. Shared by the arm runner and the judge stage: one cost rule, not two.
+    """
+    if reply.error is not None:
+        if reply.status_code is not None and 400 <= reply.status_code < 500:
+            return 0.0
+        return None
+    if reply.input_tokens is None or reply.output_tokens is None:
+        return None
+    return reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6
+
+
+def estimate_run(suite, incumbent_id, candidate_id, prices, limit=None, state_dir=None, judge_id=None) -> RunEstimate:
     from pinbench import suite as suite_mod  # local import avoids a cycle at module load
 
     suite_hash = suite_mod.freeze_hash(suite)
@@ -119,7 +182,10 @@ def estimate_run(suite, incumbent_id, candidate_id, prices, limit=None, state_di
     cand_price = prices.rows.get(candidate_id)
     inc = estimate_arm(suite, incumbent_id, inc_price, limit=limit, state_dir=state_dir, suite_hash=suite_hash)
     cand = estimate_arm(suite, candidate_id, cand_price, limit=limit, state_dir=state_dir, suite_hash=suite_hash)
-    return RunEstimate(incumbent=inc, candidate=cand)
+    judge = None
+    if judge_id is not None:
+        judge = estimate_judge_run(suite, judge_id, prices.rows.get(judge_id), limit=limit)
+    return RunEstimate(incumbent=inc, candidate=cand, judge=judge)
 
 
 class CapExceeded(Exception):

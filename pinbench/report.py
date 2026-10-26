@@ -1,7 +1,10 @@
 """Build the text/markdown/json report from run.json + mapping.json + votes.json.
 
 Refuses to do: accept a votes.json with an unknown item id or vote value (scoring.unblind_votes
-raises; report propagates that as a refusal, never a silent skip).
+raises; report propagates that as a refusal, never a silent skip). For a judge-scored run,
+always prints the judge model id and its prompt hash in the header -- two runs are only the
+same measurement when both match (judge.assert_comparable), so the report states both rather
+than letting a reader assume.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ def build_verdict(run: dict, suite, votes: Optional[dict], mapping: Optional[dic
 def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
     lines = []
     lines.append(f"Run: {run['run_name']}  ({run['incumbent']} vs {run['candidate']})")
+    if run.get("judge_model"):
+        lines.append(f"Judge: {run['judge_model']}  (prompt {run['judge_prompt_hash']})")
     lines.append(
         f"Items: {run['items_completed']}/{run['items_total']} completed"
         + ("  STOPPED EARLY" if run.get("stopped_early") else "")
@@ -38,6 +43,8 @@ def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
         f"(estimate was ${run['estimate_usd']['total']:.4f}, "
         f"spent/estimate = {_ratio(run['spent_usd']['total'], run['estimate_usd']['total']):.2f})"
     )
+    if run.get("judge_model") and "judge" in run.get("spent_usd", {}):
+        lines.append(f"  of which judge: ${run['spent_usd']['judge']:.4f} spent, ${run['estimate_usd'].get('judge', 0.0):.4f} estimated")
     for arm in ("incumbent", "candidate"):
         errs = scoring_mod.error_count(run, arm)
         if errs:
@@ -58,6 +65,9 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
     lines.append(f"# pinbench report: {run['run_name']}")
     lines.append("")
     lines.append(f"**{run['incumbent']}** (incumbent) vs **{run['candidate']}** (candidate)")
+    if run.get("judge_model"):
+        lines.append("")
+        lines.append(f"Judge: `{run['judge_model']}` (prompt `{run['judge_prompt_hash']}`)")
     lines.append("")
     lines.append(
         f"- Items: {run['items_completed']}/{run['items_total']} completed"
@@ -87,6 +97,8 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "run_name": run["run_name"],
         "incumbent": run["incumbent"],
         "candidate": run["candidate"],
+        "judge_model": run.get("judge_model"),
+        "judge_prompt_hash": run.get("judge_prompt_hash"),
         "items_completed": run["items_completed"],
         "items_total": run["items_total"],
         "stopped_early": run.get("stopped_early", False),

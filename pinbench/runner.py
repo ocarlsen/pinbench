@@ -2,7 +2,8 @@
 
 Refuses to do: send a single call when the pre-run estimate exceeds the cap, or continue
 past the cap mid-run; a call already in flight is never aborted, so a stop never loses a
-paid output.
+paid output. Also refuses to let a suite's fixed judge model be the same id as either arm
+(self-judging) unless the caller explicitly passes allow_self_judge=True.
 """
 
 from __future__ import annotations
@@ -15,12 +16,13 @@ from pathlib import Path
 from typing import Optional
 
 from . import cost as cost_mod
+from . import judge as judge_mod
 from . import providers
 from . import suite as suite_mod
 
 
 class PlanRefused(ValueError):
-    """Unpriced id, unroutable id, or missing API key. No call was made."""
+    """Unpriced id, unroutable id, missing API key, or a self-judging suite. No call was made."""
 
 
 class RunCapExceeded(ValueError):
@@ -38,6 +40,7 @@ class PlanResult:
     estimate: cost_mod.RunEstimate
     cap_usd: Optional[float]
     within_cap: Optional[bool]
+    judge_id: Optional[str] = None
 
 
 def _require_price_and_route(model_id, prices):
@@ -46,20 +49,36 @@ def _require_price_and_route(model_id, prices):
     providers.route(model_id)  # raises NoAdapterError -> caller wraps as PlanRefused
 
 
-def plan(suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None) -> PlanResult:
+def _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge):
+    if judge_id is None or allow_self_judge:
+        return
+    if judge_id in (incumbent_id, candidate_id):
+        raise PlanRefused(
+            f"judge model '{judge_id}' is also an arm in this run; a model cannot judge itself. "
+            "Pass --allow-self-judge to override."
+        )
+
+
+def plan(suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None, allow_self_judge=False) -> PlanResult:
+    judge_id = suite.judge.model if suite.judge else None
     try:
         _require_price_and_route(incumbent_id, prices)
         _require_price_and_route(candidate_id, prices)
+        if judge_id is not None:
+            _require_price_and_route(judge_id, prices)
     except providers.NoAdapterError as exc:
         raise PlanRefused(str(exc)) from exc
+    _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge)
 
-    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, prices, limit=limit, state_dir=state_dir)
+    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, prices, limit=limit, state_dir=state_dir, judge_id=judge_id)
     within_cap = None if cap_usd is None else estimate.total_usd <= cap_usd
-    return PlanResult(incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd, within_cap=within_cap)
+    return PlanResult(incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd, within_cap=within_cap, judge_id=judge_id)
 
 
-def _check_api_keys(incumbent_id, candidate_id):
-    for model_id in (incumbent_id, candidate_id):
+def _check_api_keys(*model_ids):
+    for model_id in model_ids:
+        if model_id is None:
+            continue
         provider_name = providers.provider_for_id(model_id)
         env_key = providers.ENV_KEYS[provider_name]
         if not os.environ.get(env_key):
@@ -87,24 +106,6 @@ def _recorded_params(suite, params):
     return {"max_output_tokens": suite.max_output_tokens, **params}
 
 
-def _actual_cost(reply, price):
-    """None means "charge the estimate instead" (an unknown outcome); never a fabricated $0.
-
-    A request that errored before generating (an HTTP 4xx: bad request, auth, not-found,
-    rate-limited) never produced billable output, so it costs $0 -- that is known, not
-    unknown. Any other error (a 5xx, a timeout, a dropped connection after the request was
-    sent) leaves the outcome unknown, so it is charged at the estimate, same as a 2xx reply
-    with missing usage.
-    """
-    if reply.error is not None:
-        if reply.status_code is not None and 400 <= reply.status_code < 500:
-            return 0.0
-        return None
-    if reply.input_tokens is None or reply.output_tokens is None:
-        return None
-    return reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6
-
-
 def _call_arm(model_id, suite, item, params, api_keys):
     provider_name = providers.provider_for_id(model_id)
     api_key = api_keys[provider_name]
@@ -126,13 +127,22 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys):
-    """Run every item through both arms until the meter stops it. Never aborts a call in flight."""
+def _judge_ready_outputs(inc_reply, cand_reply) -> Optional[dict]:
+    """{"incumbent": text, "candidate": text} when both arms produced real output, else None."""
+    if inc_reply.output is None or cand_reply.output is None:
+        return None
+    return {"incumbent": inc_reply.output, "candidate": cand_reply.output}
+
+
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None):
+    """Run every item through both arms (then the judge, if judge_ctx is given) until the
+    meter stops it. Never aborts a call in flight."""
     inc_params = _merged_params(inc_price, suite)
     cand_params = _merged_params(cand_price, suite)
     result_items = []
     spent_incumbent = 0.0
     spent_candidate = 0.0
+    spent_judge = 0.0
     stopped_early = False
     inc_stats = _ArmStats()
     cand_stats = _ArmStats()
@@ -143,7 +153,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             break
         inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys)
         inc_stats.record(inc_reply)
-        inc_cost = meter.charge(_actual_cost(inc_reply, inc_price), inc_estimates[item.id])
+        inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
         spent_incumbent += inc_cost
 
         if not meter.check(cand_estimates[item.id]):
@@ -152,27 +162,40 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             break
         cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys)
         cand_stats.record(cand_reply)
-        cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
+        cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
         spent_candidate += cand_cost
 
-        result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
+        judge_record = None
+        if judge_ctx is not None:
+            outputs = _judge_ready_outputs(inc_reply, cand_reply)
+            if outputs is not None:
+                judge_record, judge_stopped = judge_mod.run_judge_stage(
+                    meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item, outputs
+                )
+                spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
+                if judge_stopped:
+                    stopped_early = True
+
+        result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record))
+        if judge_ctx is not None and stopped_early:
+            break
 
     arm_stats = {"incumbent": inc_stats, "candidate": cand_stats}
-    return result_items, stopped_early, spent_incumbent, spent_candidate, inc_params, cand_params, arm_stats
+    return result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats
 
 
-def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None):
+def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None, allow_self_judge=False):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call."""
     if cap_usd is None:
         raise PlanRefused("--cap is required")
 
-    plan_result = plan(suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir)
+    plan_result = plan(suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir, allow_self_judge=allow_self_judge)
     if not plan_result.within_cap:
         raise RunCapExceeded(
             f"estimate ${plan_result.estimate.total_usd:.4f} exceeds cap ${cap_usd:.4f}",
             plan_result.estimate,
         )
-    _check_api_keys(incumbent_id, candidate_id)
+    _check_api_keys(incumbent_id, candidate_id, plan_result.judge_id)
 
     inc_price = prices.rows[incumbent_id]
     cand_price = prices.rows[candidate_id]
@@ -184,19 +207,24 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
         "openai": os.environ.get("OPENAI_API_KEY"),
     }
 
+    judge_ctx = None
+    if plan_result.judge_id is not None:
+        judge_provider = providers.provider_for_id(plan_result.judge_id)
+        judge_ctx = {"id": plan_result.judge_id, "price": prices.rows[plan_result.judge_id], "api_key": api_keys[judge_provider]}
+
     meter = cost_mod.CostMeter(cap_usd=cap_usd)
     items = suite.items[:limit] if limit else suite.items
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-    result_items, stopped_early, spent_incumbent, spent_candidate, inc_params, cand_params, arm_stats = _execute_items(
-        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys
+    result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats = _execute_items(
+        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx
     )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
     record = _build_record(
         run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-        plan_result, spent_incumbent, spent_candidate, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
+        plan_result, spent_incumbent, spent_candidate, spent_judge, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
     )
 
     _write_run_json(state_dir, run_name, record)
@@ -204,7 +232,7 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
 
 
 def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, inc_params, cand_params, result_items, arm_stats):
+                   plan_result, spent_incumbent, spent_candidate, spent_judge, stopped_early, items, inc_params, cand_params, result_items, arm_stats):
     # An item "completed" only when BOTH arms returned real output (no error on either side);
     # an item where one arm errored is not completed, even though both arms were attempted.
     items_completed = sum(
@@ -212,25 +240,28 @@ def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, start
         for r in result_items
         if r["candidate"] is not None and r["incumbent"]["output"] is not None and r["candidate"]["output"] is not None
     )
+    estimate_usd = {
+        "incumbent": plan_result.estimate.incumbent.cost_usd,
+        "candidate": plan_result.estimate.candidate.cost_usd,
+        "total": plan_result.estimate.total_usd,
+    }
+    spent_usd = {"incumbent": spent_incumbent, "candidate": spent_candidate, "total": spent_incumbent + spent_candidate + spent_judge}
+    if plan_result.judge_id is not None:
+        estimate_usd["judge"] = plan_result.estimate.judge.cost_usd if plan_result.estimate.judge else 0.0
+        spent_usd["judge"] = spent_judge
     return {
         "run_name": run_name,
         "suite": str(suite_path) if suite_path else suite.name,
         "suite_hash": suite_mod.freeze_hash(suite),
         "incumbent": incumbent_id,
         "candidate": candidate_id,
+        "judge_model": plan_result.judge_id,
+        "judge_prompt_hash": judge_mod.prompt_hash(suite.judge.rubric) if suite.judge else None,
         "started_at": started_at,
         "finished_at": finished_at,
         "cap_usd": cap_usd,
-        "estimate_usd": {
-            "incumbent": plan_result.estimate.incumbent.cost_usd,
-            "candidate": plan_result.estimate.candidate.cost_usd,
-            "total": plan_result.estimate.total_usd,
-        },
-        "spent_usd": {
-            "incumbent": spent_incumbent,
-            "candidate": spent_candidate,
-            "total": spent_incumbent + spent_candidate,
-        },
+        "estimate_usd": estimate_usd,
+        "spent_usd": spent_usd,
         "stopped_early": stopped_early,
         "items_completed": items_completed,
         "items_total": len(items),
@@ -253,15 +284,22 @@ def _arm_record(reply, cost_usd):
     }
 
 
-def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost):
-    """`incumbent`/`candidate` are providers.Reply objects; candidate is None when the meter stopped first."""
-    return {
+def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost, judge_record=None):
+    """`incumbent`/`candidate` are providers.Reply objects; candidate is None when the meter
+    stopped first. `judge_record` (from judge.run_judge_stage) is None for a non-judge suite,
+    or when the meter stopped before the judge stage ran for this item.
+    """
+    record = {
         "id": item.id,
         "input": item.input,
         "expect": item.expect,
+        "rubric_points": [{"id": p.id, "description": p.description} for p in item.rubric_points],
         "incumbent": _arm_record(incumbent, incumbent_cost),
         "candidate": None if candidate is None else _arm_record(candidate, candidate_cost),
     }
+    if judge_record is not None:
+        record["judge"] = judge_record
+    return record
 
 
 def _write_run_json(state_dir, run_name, record):

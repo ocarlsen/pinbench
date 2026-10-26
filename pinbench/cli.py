@@ -48,7 +48,10 @@ def cmd_plan(args):
     suite = suite_mod.load(args.suite)
     prices = prices_mod.load(args.prices)
     try:
-        result = runner_mod.plan(suite, args.incumbent, args.candidate, prices, cap_usd=args.cap, limit=args.limit, state_dir=args.state)
+        result = runner_mod.plan(
+            suite, args.incumbent, args.candidate, prices, cap_usd=args.cap, limit=args.limit,
+            state_dir=args.state, allow_self_judge=args.allow_self_judge,
+        )
     except runner_mod.PlanRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
@@ -58,6 +61,13 @@ def cmd_plan(args):
         print(
             f"{label:<9} {arm.model_id:<24} {len(arm.items):>3} items  est ${arm.cost_usd:.4f}  "
             f"(${price.input:.2f}/${price.output:.2f} per Mtok)"
+        )
+    if result.estimate.judge is not None:
+        judge_price = prices.rows[result.judge_id]
+        judge_calls = len(result.estimate.judge.items)
+        print(
+            f"{'judge':<9} {result.judge_id:<24} {judge_calls:>3} calls  est ${result.estimate.judge.cost_usd:.4f}  "
+            f"(${judge_price.input:.2f}/${judge_price.output:.2f} per Mtok)"
         )
     total = result.estimate.total_usd
     if args.cap is None:
@@ -84,6 +94,7 @@ def cmd_run(args):
             name=args.name,
             state_dir=args.state,
             suite_path=args.suite,
+            allow_self_judge=args.allow_self_judge,
         )
     except runner_mod.RunCapExceeded as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -224,6 +235,17 @@ def cmd_bump(args):
     return 0
 
 
+def _add_arm_args(p, cap_required):
+    p.add_argument("suite")
+    p.add_argument("--incumbent", required=True)
+    p.add_argument("--candidate", required=True)
+    p.add_argument("--cap", type=float, required=cap_required)
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--prices", default=DEFAULT_PRICES)
+    p.add_argument("--state", default=DEFAULT_STATE)
+    p.add_argument("--allow-self-judge", action="store_true", help="allow the suite's judge model to also be an arm")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="pinbench", description="Pin your models. Bench a candidate before you switch.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -233,24 +255,12 @@ def build_parser():
     p_pins.set_defaults(func=cmd_pins)
 
     p_plan = sub.add_parser("plan", help="estimate cost without spending")
-    p_plan.add_argument("suite")
-    p_plan.add_argument("--incumbent", required=True)
-    p_plan.add_argument("--candidate", required=True)
-    p_plan.add_argument("--cap", type=float, default=None)
-    p_plan.add_argument("--limit", type=int, default=None)
-    p_plan.add_argument("--prices", default=DEFAULT_PRICES)
-    p_plan.add_argument("--state", default=DEFAULT_STATE)
+    _add_arm_args(p_plan, cap_required=False)
     p_plan.set_defaults(func=cmd_plan)
 
     p_run = sub.add_parser("run", help="run both arms over a suite")
-    p_run.add_argument("suite")
-    p_run.add_argument("--incumbent", required=True)
-    p_run.add_argument("--candidate", required=True)
-    p_run.add_argument("--cap", type=float, required=True)
-    p_run.add_argument("--limit", type=int, default=None)
+    _add_arm_args(p_run, cap_required=True)
     p_run.add_argument("--name", default=None)
-    p_run.add_argument("--prices", default=DEFAULT_PRICES)
-    p_run.add_argument("--state", default=DEFAULT_STATE)
     p_run.set_defaults(func=cmd_run)
 
     p_vote = sub.add_parser("vote", help="build the blind A/B vote page")

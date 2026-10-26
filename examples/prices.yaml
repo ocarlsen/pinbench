@@ -19,6 +19,19 @@ models:
     input: 0.05
     output: 0.40
     source: "https://developers.openai.com/api/docs/pricing"
+  claude-opus-5-5:
+    # Base tier, standard (non-fast-mode) rate, verified 2026-10-26.
+    input: 4.00
+    output: 20.00
+    source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    # Opus 5.5 cannot turn thinking off: the model-configuration table at
+    # https://platform.claude.com/docs/en/build-with-claude/thinking shows every `thinking`
+    # value other than "adaptive" (no field, "enabled", "between_tools", "disabled") returns
+    # a 400 on this model; adaptive thinking is always on. Its default effort is "medium"
+    # (same page, "Migrating to adaptive thinking"); no request_defaults value here turns it
+    # off, so a judge suite using this model needs a generous judge.max_output_tokens --
+    # thinking tokens are billed as output and count against that ceiling, same failure mode
+    # as the empty-output defect this README documents for arms.
   claude-haiku-5-5:
     # Base tier (prompts <= 100,000 tokens); the API bills this rate for suites like
     # examples/suites/*.yaml, which are far under that threshold. The overview page's

@@ -1,0 +1,98 @@
+version: 1
+name: review
+task: "Review this for defects. Point out anything wrong; do not rewrite it."
+max_output_tokens: 300
+scoring:
+  labels: judge
+  votes: none
+policy:
+  min_items: 6
+  recall_tolerance_points: 0.0
+  extra_tolerance: 0.5
+  require_votes_when_unlabeled: false
+judge:
+  model: claude-opus-5-5
+  max_output_tokens: 1024
+  rubric: >
+    You are reviewing a short code diff or config snippet for defects. Judge the response
+    against the given rubric points only; each point describes one planted defect in the
+    artifact. A response satisfies a point when it clearly identifies that specific defect,
+    even in different words -- a vague "this looks wrong" without naming the actual problem
+    does not count. Count any OTHER real defect the response raises, beyond the rubric
+    points, as an extra finding; do not count stylistic nitpicks or restating the task as
+    extra findings.
+items:
+  - id: r01
+    input: |
+      --- a/discount.py
+      +++ b/discount.py
+      @@
+      def apply_discount(price, pct):
+      -    return price - (price * pct / 100)
+      +    return price - (price * pct)
+    rubric_points:
+      - id: wrong-scale
+        description: "pct is treated as already a fraction (0-1) instead of a percent (0-100), so the discount is 100x too large for any pct > 1"
+    decoys:
+      - "the function has no input validation for negative price -- plausible-looking but not the planted defect"
+  - id: r02
+    input: |
+      def get_user(user_id):
+          users = {1: "alice", 2: "bob"}
+          return users[user_id]
+    rubric_points:
+      - id: key-error
+        description: "an unknown user_id raises an uncaught KeyError instead of returning a clear not-found result"
+    decoys:
+      - "the users dict is hardcoded instead of loaded from a database -- a real limitation, but not the planted defect being graded"
+  - id: r03
+    input: |
+      server:
+        host: 0.0.0.0
+        port: 8080
+        debug: true
+    rubric_points:
+      - id: debug-in-prod
+        description: "debug: true is left on, which in most frameworks exposes stack traces and internals to any client"
+    decoys:
+      - "binding to 0.0.0.0 instead of a specific interface -- a common talking point, but not the planted defect here"
+  - id: r04
+    input: |
+      --- a/cache.py
+      +++ b/cache.py
+      @@
+      def get_cached(key, store):
+      -    return store.get(key)
+      +    value = store.get(key)
+      +    store[key] = value
+      +    return value
+    rubric_points:
+      - id: cache-poisoning-miss
+        description: "a cache miss (value is None) gets written back into the store, poisoning future lookups with a stale None"
+    decoys:
+      - "no expiry/TTL is set on the cache entries -- a reasonable design note, but not the planted defect"
+  - id: r05
+    input: |
+      def average(nums):
+          total = 0
+          for n in nums:
+              total += n
+          return total / len(nums)
+    rubric_points:
+      - id: empty-list-division
+        description: "calling average([]) raises ZeroDivisionError because len(nums) is zero and nothing guards against it"
+    decoys:
+      - "a plain loop instead of sum(nums) -- a style point, not the planted defect"
+  - id: r06
+    input: |
+      --- a/auth.py
+      +++ b/auth.py
+      @@
+      def check_password(input_pw, stored_hash):
+      -    return hmac.compare_digest(input_pw, stored_hash)
+      +    return input_pw == stored_hash
+    rubric_points:
+      - id: timing-attack
+        description: "the constant-time hmac.compare_digest comparison was replaced with a plain ==, reopening a timing side-channel on password comparison"
+    decoys:
+      - "the hash itself is never shown to be salted -- a real concern elsewhere in a real auth system, but not this specific planted change"

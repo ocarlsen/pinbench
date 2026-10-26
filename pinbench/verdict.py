@@ -4,7 +4,9 @@ Refuses to do: hard-code a number in the printed rule; every number is read from
 suite's `policy`, so changing policy changes what the report says the rule is. Also refuses
 to call a run complete when either arm has more truncated outputs than
 `policy.max_truncated` (default 0) -- a comparison built on cut-off answers is INCOMPLETE,
-same bucket as an arm error.
+same bucket as an arm error. For a judge-scored suite (scoring.labels == "judge"), any judge
+error makes the run INCOMPLETE the same way an arm error does, and the labels check is
+replaced by two judge checks (recall, extra findings) instead of exact/contains/regex match.
 """
 
 from __future__ import annotations
@@ -98,7 +100,7 @@ def _check_no_arm_errors(run: dict) -> Check:
 
 
 def _check_labels(run: dict, suite) -> Optional[Check]:
-    if suite.scoring.labels == "none":
+    if suite.scoring.labels in ("none", "judge"):
         return None
     cand = scoring_mod.label_agreement(run, "candidate", suite.scoring.labels, suite.scoring.normalize)
     inc = scoring_mod.label_agreement(run, "incumbent", suite.scoring.labels, suite.scoring.normalize)
@@ -109,6 +111,55 @@ def _check_labels(run: dict, suite) -> Optional[Check]:
         f"({inc.matched}/{inc.total}); tolerance {tol} points; {'PASS' if passed else 'FAIL'}"
     )
     return Check("labels", passed, detail)
+
+
+def _check_judge_errors(run: dict, suite) -> Optional[Check]:
+    """INCOMPLETE-causing, same bucket as an arm error: a malformed judge reply or a judge
+    call that itself failed means this item was never actually graded, not that the
+    candidate looked bad.
+    """
+    if suite.scoring.labels != "judge":
+        return None
+    n = scoring_mod.judge_error_count(run)
+    if n == 0:
+        return Check("judge_errors", True, "0 judge errors")
+    return Check("judge_errors", False, f"{n} judge error(s); first: {scoring_mod.first_judge_error(run)}")
+
+
+def _check_judge_recall(run: dict, suite) -> Optional[Check]:
+    if suite.scoring.labels != "judge":
+        return None
+    cand = scoring_mod.judge_recall(run, "candidate")
+    inc = scoring_mod.judge_recall(run, "incumbent")
+    tol = suite.policy.recall_tolerance_points
+    passed = cand.pct >= inc.pct - tol
+    detail = (
+        f"candidate recall {cand.pct:.1f}% ({cand.hits}/{cand.points}) vs incumbent "
+        f"{inc.pct:.1f}% ({inc.hits}/{inc.points}); tolerance {tol} points; {'PASS' if passed else 'FAIL'}"
+    )
+    return Check("judge_recall", passed, detail)
+
+
+def _check_judge_extra(run: dict, suite) -> Optional[Check]:
+    """HOLD-causing: the candidate's mean "extra" (spurious finding) count may not exceed
+    the incumbent's by more than policy.extra_tolerance per item -- a judge's extra-findings
+    count is a precision proxy, so this is the half of the judge check that recall alone
+    cannot see (a model that hits every rubric point by also flagging everything in sight
+    is not an improvement).
+    """
+    if suite.scoring.labels != "judge":
+        return None
+    cand_extra = scoring_mod.judge_extra_mean(run, "candidate")
+    inc_extra = scoring_mod.judge_extra_mean(run, "incumbent")
+    tol = suite.policy.extra_tolerance
+    if cand_extra is None or inc_extra is None:
+        return Check("judge_extra", False, "missing judge extra-findings data")
+    passed = cand_extra <= inc_extra + tol
+    detail = (
+        f"candidate extra {cand_extra:.2f}/item vs incumbent {inc_extra:.2f}/item; "
+        f"tolerance {tol}/item; {'PASS' if passed else 'FAIL'}"
+    )
+    return Check("judge_extra", passed, detail)
 
 
 def _check_votes(run: dict, votes, mapping) -> Optional[tuple]:
@@ -124,14 +175,19 @@ def _check_votes(run: dict, votes, mapping) -> Optional[tuple]:
     return Check("votes", passed, detail), tally
 
 
-def _check_cost(run: dict, suite, label_strict_win: bool, vote_strict_win: bool) -> Check:
+def _check_cost(run: dict, suite, strict_win: bool) -> Check:
+    """`strict_win` is pre-combined by the caller: (label strict win AND vote strict win)
+    for a labeled/voted suite, or a judge strict win (recall strictly better AND extra no
+    worse) for a judge suite -- whichever pair of independent signals this suite has agree
+    the candidate is strictly better, not just non-inferior.
+    """
     cand_cost = scoring_mod.cost_per_item(run, "candidate")
     inc_cost = scoring_mod.cost_per_item(run, "incumbent")
     tol = suite.policy.cost_tolerance
     if cand_cost is None or inc_cost is None or inc_cost == 0:
         return Check("cost", False, "missing cost data")
     ratio_ok = cand_cost <= inc_cost * (1 + tol)
-    passed = ratio_ok or (label_strict_win and vote_strict_win)
+    passed = ratio_ok or strict_win
     detail = (
         f"candidate ${cand_cost:.6f}/item vs incumbent ${inc_cost:.6f}/item "
         f"(ratio {cand_cost / inc_cost:.2f}, allowed {1 + tol:.2f}); {'PASS' if passed else 'FAIL'}"
@@ -140,11 +196,24 @@ def _check_cost(run: dict, suite, label_strict_win: bool, vote_strict_win: bool)
 
 
 def _label_strict_win(run, suite) -> bool:
-    if suite.scoring.labels == "none":
+    if suite.scoring.labels in ("none", "judge"):
         return False
     cand = scoring_mod.label_agreement(run, "candidate", suite.scoring.labels, suite.scoring.normalize)
     inc = scoring_mod.label_agreement(run, "incumbent", suite.scoring.labels, suite.scoring.normalize)
     return cand.pct > inc.pct + suite.policy.label_tolerance_points
+
+
+def _judge_strict_win(run, suite) -> bool:
+    """Recall strictly better (beyond tolerance) counts as a judge "strict win" for the
+    cost-tolerance override, same role _label_strict_win plays for labeled suites. Extra
+    findings are checked for PASS, not for a strict win -- fewer extra findings is a tie-
+    breaker, not itself grounds to waive the cost tolerance.
+    """
+    if suite.scoring.labels != "judge":
+        return False
+    cand = scoring_mod.judge_recall(run, "candidate")
+    inc = scoring_mod.judge_recall(run, "incumbent")
+    return cand.pct > inc.pct + suite.policy.recall_tolerance_points
 
 
 def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dict] = None) -> Verdict:
@@ -162,6 +231,12 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
     if not errors_check.passed:
         return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
+    judge_errors_check = _check_judge_errors(run, suite)
+    if judge_errors_check is not None:
+        checks.append(judge_errors_check)
+        if not judge_errors_check.passed:
+            return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
+
     truncation_check = _check_truncation(run, suite)
     checks.append(truncation_check)
     if not truncation_check.passed:
@@ -172,37 +247,63 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
     if not votes_present.passed:
         return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
-    hold_checks = []
-    label_check = _check_labels(run, suite)
-    if label_check is not None:
-        hold_checks.append(label_check)
-
-    vote_result = _check_votes(run, votes, mapping)
-    tally = None
-    if vote_result is not None:
-        vote_check, tally = vote_result
-        hold_checks.append(vote_check)
-
-    label_strict_win = bool(label_check and _label_strict_win(run, suite))
-    vote_strict_win = bool(tally and tally.candidate_wins > tally.incumbent_wins)
-    cost_check = _check_cost(run, suite, label_strict_win, vote_strict_win)
-    hold_checks.append(cost_check)
-
+    hold_checks = _hold_checks(run, suite, votes, mapping)
     checks.extend(hold_checks)
     verdict_str = "RECOMMEND" if all(c.passed for c in hold_checks) else "HOLD"
     return Verdict(verdict_str, checks, _rule_text(suite, n))
 
 
+def _hold_checks(run: dict, suite, votes, mapping) -> list:
+    """Every non-INCOMPLETE check: labels or judge recall/extra, votes, then cost (which may
+    waive its own tolerance on a strict win from whichever pair of independent signals this
+    suite has)."""
+    hold_checks = []
+    label_check = _check_labels(run, suite)
+    if label_check is not None:
+        hold_checks.append(label_check)
+
+    judge_recall_check = _check_judge_recall(run, suite)
+    judge_extra_check = _check_judge_extra(run, suite)
+    for check in (judge_recall_check, judge_extra_check):
+        if check is not None:
+            hold_checks.append(check)
+
+    vote_result = _check_votes(run, votes, mapping)
+    tally = vote_result[1] if vote_result is not None else None
+    if vote_result is not None:
+        hold_checks.append(vote_result[0])
+
+    label_strict_win = bool(label_check and _label_strict_win(run, suite))
+    vote_strict_win = bool(tally and tally.candidate_wins > tally.incumbent_wins)
+    judge_strict_win = bool(
+        judge_recall_check and judge_extra_check and judge_recall_check.passed and judge_extra_check.passed
+        and _judge_strict_win(run, suite)
+    )
+    strict_win = (label_strict_win and vote_strict_win) or judge_strict_win
+    hold_checks.append(_check_cost(run, suite, strict_win))
+    return hold_checks
+
+
 def _rule_text(suite, n: int) -> str:
     """The rule in prose. Thresholds come from policy; the resolution sentence uses this run's n."""
-    tol = suite.policy.label_tolerance_points
     cost_pct = int(round((1 + suite.policy.cost_tolerance) * 100))
     min_items = suite.policy.min_items
     max_truncated = suite.policy.max_truncated
     points = round(100.0 / n, 1) if n else 100.0
+    if suite.scoring.labels == "judge":
+        scoring_clause = (
+            f"non-inferior on judge recall (within {suite.policy.recall_tolerance_points} points) "
+            f"and no worse than {suite.policy.extra_tolerance} extra findings per item than the "
+            "incumbent (judge errors make the run INCOMPLETE, never guessed), non-losing on blind "
+            "votes (ties excluded)"
+        )
+    else:
+        scoring_clause = (
+            f"non-inferior on labels (within {suite.policy.label_tolerance_points} points), "
+            "non-losing on blind votes (ties excluded)"
+        )
     return (
-        f"a candidate is recommended when it is non-inferior on labels (within {tol} points), "
-        "non-losing on blind votes (ties excluded), and costs no more than "
+        f"a candidate is recommended when it is {scoring_clause}, and costs no more than "
         f"{cost_pct}% of the incumbent per item, over at least {min_items} completed items with "
         f"no errors and no more than {max_truncated} truncated output(s) per arm. "
         f"{n} items can show a large regression, not a small one "

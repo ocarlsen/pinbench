@@ -1,8 +1,11 @@
-"""Score a run.json: label agreement, vote tally, cost and latency stats.
+"""Score a run.json: label agreement, vote tally, judge recall/extra, cost and latency stats.
 
 Refuses to do: treat an arm's error as anything but a miss for labels and an exclusion
 from latency stats; refuses an unknown normalize step name; refuses to call a truncated
-output "complete" without saying so (is_truncated/truncated_count).
+output "complete" without saying so (is_truncated/truncated_count); refuses to count a
+rubric point an item never declared, or to let a judge error on an item silently drop that
+item's rubric points from the recall denominator (a judge error makes the run INCOMPLETE,
+scored separately, never averaged away).
 """
 
 from __future__ import annotations
@@ -120,6 +123,72 @@ def latency_stats(run: dict, arm: str) -> dict:
     if not values:
         return {"mean_ms": None, "n": 0}
     return {"mean_ms": sum(values) / len(values), "n": len(values)}
+
+
+@dataclass
+class JudgeRecall:
+    hits: int
+    points: int
+
+    @property
+    def pct(self) -> float:
+        return 0.0 if self.points == 0 else 100.0 * self.hits / self.points
+
+
+def judge_recall(run: dict, arm: str) -> JudgeRecall:
+    """Total rubric points hit for `arm` over total rubric points declared, across every
+    item -- an item whose judge call errored contributes its points to the denominator but
+    zero hits (the error itself fails the run via judge_error_count, this just keeps the
+    recall math honest rather than silently shrinking n).
+    """
+    hits = 0
+    points = 0
+    for item in run["items"]:
+        item_points = len(item.get("rubric_points") or [])
+        points += item_points
+        judge = item.get("judge") or {}
+        arm_result = judge.get(arm)
+        if arm_result and not arm_result.get("error"):
+            hits += len(arm_result.get("hit") or [])
+    return JudgeRecall(hits=hits, points=points)
+
+
+def judge_extra_mean(run: dict, arm: str) -> Optional[float]:
+    """Mean "extra" (spurious findings) count over items the judge actually scored for this
+    arm; None when nothing was scored. Items with a judge error are excluded, same as a
+    latency stat excludes an arm error.
+    """
+    values = []
+    for item in run["items"]:
+        judge = item.get("judge") or {}
+        arm_result = judge.get(arm)
+        if arm_result and not arm_result.get("error"):
+            values.append(arm_result.get("extra", 0))
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def judge_error_count(run: dict) -> int:
+    """Count of (item, arm) judge calls that errored, across both arms."""
+    count = 0
+    for item in run["items"]:
+        judge = item.get("judge") or {}
+        for arm in ("incumbent", "candidate"):
+            arm_result = judge.get(arm)
+            if arm_result and arm_result.get("error"):
+                count += 1
+    return count
+
+
+def first_judge_error(run: dict) -> Optional[str]:
+    for item in run["items"]:
+        judge = item.get("judge") or {}
+        for arm in ("incumbent", "candidate"):
+            arm_result = judge.get(arm)
+            if arm_result and arm_result.get("error"):
+                return arm_result["error"]
+    return None
 
 
 @dataclass
