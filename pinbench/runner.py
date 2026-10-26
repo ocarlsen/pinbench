@@ -83,6 +83,35 @@ def _call_arm(model_id, suite, item, params, api_keys):
     return adapter.call(model_id, suite.task, item.input, suite.max_output_tokens, api_key, params=params)
 
 
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys):
+    """Run every item through both arms until the meter stops it. Never aborts a call in flight."""
+    params = _default_params(suite)
+    result_items = []
+    spent_incumbent = 0.0
+    spent_candidate = 0.0
+    stopped_early = False
+
+    for item in items:
+        if not meter.check(inc_estimates[item.id]):
+            stopped_early = True
+            break
+        inc_reply = _call_arm(incumbent_id, suite, item, params, api_keys)
+        inc_cost = meter.charge(_actual_cost(inc_reply, inc_price), inc_estimates[item.id])
+        spent_incumbent += inc_cost
+
+        if not meter.check(cand_estimates[item.id]):
+            stopped_early = True
+            result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=None, candidate_cost=None))
+            break
+        cand_reply = _call_arm(candidate_id, suite, item, params, api_keys)
+        cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
+        spent_candidate += cand_cost
+
+        result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=cand_reply, candidate_cost=cand_cost))
+
+    return result_items, stopped_early, spent_incumbent, spent_candidate, params
+
+
 def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call."""
     if cap_usd is None:
@@ -106,39 +135,29 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
         "openai": os.environ.get("OPENAI_API_KEY"),
     }
 
-    params = _default_params(suite)
     meter = cost_mod.CostMeter(cap_usd=cap_usd)
-    spent_incumbent = 0.0
-    spent_candidate = 0.0
-
     items = suite.items[:limit] if limit else suite.items
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-    result_items = []
-    stopped_early = False
-    for item in items:
-        if not meter.check(inc_estimates[item.id]):
-            stopped_early = True
-            break
-        inc_reply = _call_arm(incumbent_id, suite, item, params, api_keys)
-        inc_cost = meter.charge(_actual_cost(inc_reply, inc_price), inc_estimates[item.id])
-        spent_incumbent += inc_cost
-
-        if not meter.check(cand_estimates[item.id]):
-            stopped_early = True
-            result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=None, candidate_cost=None))
-            break
-        cand_reply = _call_arm(candidate_id, suite, item, params, api_keys)
-        cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
-        spent_candidate += cand_cost
-
-        result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=cand_reply, candidate_cost=cand_cost))
+    result_items, stopped_early, spent_incumbent, spent_candidate, params = _execute_items(
+        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys
+    )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    items_completed = sum(1 for r in result_items if r["candidate"] is not None)
+    record = _build_record(
+        run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
+        plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items,
+    )
 
-    record = {
+    _write_run_json(state_dir, run_name, record)
+    return record
+
+
+def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
+                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items):
+    items_completed = sum(1 for r in result_items if r["candidate"] is not None)
+    return {
         "run_name": run_name,
         "suite": str(suite_path) if suite_path else suite.name,
         "suite_hash": suite_mod.freeze_hash(suite),
@@ -163,9 +182,6 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
         "request_params": {"incumbent": params, "candidate": params},
         "items": result_items,
     }
-
-    _write_run_json(state_dir, run_name, record)
-    return record
 
 
 def _item_record(item, incumbent_id, incumbent_cost, candidate, candidate_cost):
