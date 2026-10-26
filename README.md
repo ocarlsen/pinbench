@@ -61,17 +61,17 @@ Turkey) to show what a HOLD looks like; it is not the output of a live API run y
 **claude-sonnet-5-5** (incumbent) vs **gpt-5-mini** (candidate)
 
 - Items: 12/12 completed
-- Spend: $0.0018 of $0.10 cap (estimate $0.0113)
+- Spend: $0.0026 of $0.10 cap (estimate $0.0148)
 
 ## Checks
 
 | check | result | detail |
 |---|---|---|
 | completeness | PASS | n=12 >= 10 |
+| errors | PASS | incumbent and candidate both had 0 errors |
 | votes_present | PASS | votes not required for this suite |
-| candidate_errors | PASS | candidate had 0 errors |
 | labels | FAIL | candidate 83.3% (10/12) vs incumbent 100.0% (12/12); tolerance 0.0 points; FAIL |
-| cost | PASS | candidate $0.000018/item vs incumbent $0.000135/item (ratio 0.13, allowed 1.25); PASS |
+| cost | PASS | candidate $0.000010/item vs incumbent $0.000210/item (ratio 0.05, allowed 1.25); PASS |
 
 ## Verdict: HOLD
 
@@ -134,18 +134,29 @@ diffs id strings.
 | `pinbench pins` | print the registry as a table |
 | `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD]` | estimate cost, no spend |
 | `pinbench run SUITE --incumbent ID --candidate ID --cap USD` | run both arms, write run.json |
-| `pinbench vote RUN_NAME [--open]` | build the blind A/B page |
+| `pinbench vote RUN_NAME [--open] [--allow-missing]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff each provider's catalog against the last snapshot |
 | `pinbench bump SLOT --to ID --run RUN_NAME` | edit a pin, gated on a RECOMMEND report |
 
-Every command has `--help`. Exit codes: 0 ok, 1 error, 2 refusal before any spend, 3 the
-cost cap was exceeded.
+Every command has `--help`. Exit codes: 0 ok, 1 error (including `vote` refusing a run with
+missing output), 2 refusal before any spend, 3 the cost cap was exceeded, 4 a `run` where
+one arm got zero successes. `run` prints a per-arm `succeeded/attempted` line and the first
+error (truncated) when an arm had any; it still exits 0 with a warning when some, but not
+all, items completed on both arms -- only a wholly-failed arm is exit 4.
+
+`vote` refuses (exit 1) when any item is missing output on either arm, naming the item/arm
+pairs, rather than rendering a blank card; `--allow-missing` renders those as explicit
+error cards instead. `report` folds any per-arm error above zero into an INCOMPLETE
+verdict (see Design decisions), and a 4xx error that happened before the model generated
+anything costs $0 in `run.json`, never the pre-run estimate.
 
 ## Suite format
 
 A suite is a frozen set of inputs in `suite.yaml` (or `.json` with the same keys): a
-`task` string used as the system prompt for both arms, a `max_output_tokens` ceiling, a
+`task` string used as the system prompt for both arms, a `max_output_tokens` ceiling, an
+optional `params` dict of extra sampling params sent to both arms verbatim (empty by
+default; set `params: {temperature: 0}` only if you want it and your models accept it), a
 `scoring` block (`labels: exact | contains | regex | none`, a `normalize` list, and
 whether `votes` are `required | optional | none`), a `policy` block with the decision
 rule's knobs, and a list of `items`, each with an `id`, an `input`, and an optional
@@ -167,10 +178,14 @@ paragraph, vote-only).
 - The watch comparator is a heuristic over id strings (family and version tokens), not a
   vendor feed. It will miss a rename that does not follow the pattern.
 - Both arms get the same request: the suite's `task` as the system prompt, its
-  `max_output_tokens` as the ceiling, `temperature: 0`. Whatever was sent is recorded in
-  `run.json` under `request_params`. A new model's defaults can differ from the old one's
-  (reasoning effort, for instance), and a candidate that rejects a fixed temperature
-  records that rejection as an error, which is a HOLD, not a silent retry.
+  `max_output_tokens` as the ceiling, and whatever optional `params` the suite itself sets
+  (e.g. `params: {temperature: 0}`) -- never a sampling default pinbench injects on its
+  own. Newer models increasingly reject a fixed temperature outright, and determinism
+  was never guaranteed by setting it anyway, so the suite opts in only when it wants to.
+  Whatever was actually sent is recorded in `run.json` under `request_params`. A new
+  model's defaults can differ from the old one's (reasoning effort, for instance), and a
+  candidate that rejects a param the suite set records that rejection as an error, which
+  makes the verdict INCOMPLETE, not a silent retry.
 - No confidence intervals, inter-rater agreement, or rotating reviewers; no hosted voting;
   no chat or email notifications, scheduler, or daemon (`watch` is a one-shot you cron); no
   automatic PR creation or rollback tooling; no thinking/reasoning-effort normalization

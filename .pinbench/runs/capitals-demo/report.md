@@ -1,19 +1,19 @@
 # pinbench report: capitals-demo
 
-**claude-sonnet-5-5** (incumbent) vs **gpt-5-mini** (candidate)
+**claude-sonnet-4-5** (incumbent) vs **gpt-4o-mini** (candidate)
 
 - Items: 12/12 completed
-- Spend: $0.0018 of $0.10 cap (estimate $0.0113)
+- Spend: $0.0026 of $0.10 cap (estimate $0.0148)
 
 ## Checks
 
 | check | result | detail |
 |---|---|---|
 | completeness | PASS | n=12 >= 10 |
+| errors | PASS | incumbent and candidate both had 0 errors |
 | votes_present | PASS | votes not required for this suite |
-| candidate_errors | PASS | candidate had 0 errors |
 | labels | FAIL | candidate 83.3% (10/12) vs incumbent 100.0% (12/12); tolerance 0.0 points; FAIL |
-| cost | PASS | candidate $0.000018/item vs incumbent $0.000135/item (ratio 0.13, allowed 1.25); PASS |
+| cost | PASS | candidate $0.000010/item vs incumbent $0.000210/item (ratio 0.05, allowed 1.25); PASS |
 
 ## Verdict: HOLD
 

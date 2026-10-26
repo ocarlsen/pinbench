@@ -14,3 +14,11 @@ models:
     input: 0.05
     output: 0.40
     source: "https://developers.openai.com/api/docs/pricing"
+  claude-haiku-5-5:
+    # Base tier (prompts <= 100,000 tokens); the API bills this rate for suites like
+    # examples/suites/*.yaml, which are far under that threshold. The overview page's
+    # "from $0.10/$0.50" is this same base rate -- "from" refers to the long-context
+    # tier (prompts over 100,000 tokens cost 5x: $0.50/$2.50), not a volume discount.
+    input: 0.10
+    output: 0.50
+    source: "https://platform.claude.com/docs/en/about-claude/pricing"
