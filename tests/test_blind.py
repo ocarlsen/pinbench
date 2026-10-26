@@ -52,6 +52,32 @@ def test_vote_html_contains_no_model_ids_or_side_words(tmp_path):
     assert blind.FOOTER_SENTENCE in html
 
 
+def test_vote_html_has_instructions_block_with_no_model_ids_or_side_words():
+    run = _run(1)
+    mapping = blind.build_mapping(run)
+    html = blind.build_vote_html(run, mapping, "r1")
+
+    assert 'id="instructions"' in html
+    assert "pick the better output" in html
+    assert "Export" in html
+    assert "pinbench report r1 --votes" in html
+
+    without_footer = html.replace(blind.FOOTER_SENTENCE, "")
+    for banned in ("claude-sonnet-4-5", "gpt-4o-mini"):
+        assert banned not in html
+    assert "incumbent" not in without_footer
+    assert "candidate" not in without_footer
+
+
+def test_export_button_appears_before_cards():
+    """Owen opened the page once and couldn't find Export; it must sit above #cards, in the
+    sticky #actions bar, not buried at the bottom after every card."""
+    run = _run(3)
+    mapping = blind.build_mapping(run)
+    html = blind.build_vote_html(run, mapping, "r1")
+    assert html.index('id="export"') < html.index('id="cards"')
+
+
 def test_vote_html_has_both_outputs_and_controls():
     run = _run(1)
     mapping = blind.build_mapping(run)

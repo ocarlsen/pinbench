@@ -1,9 +1,13 @@
 """Build the blind A/B mapping and the self-contained vote.html page.
 
-Refuses to do: put a model id or the words incumbent/candidate inside a vote card; refuses
-to re-shuffle an existing mapping.json (idempotent on re-publish); refuses to render a
-blank card for an item missing output on either side (see `missing_output_item_arms`) --
-the CLI gates that refusal, this module renders the error text instead once it is waived.
+Refuses to do: put a model id or the words incumbent/candidate inside a vote card or the
+page's instructions block; refuses to re-shuffle an existing mapping.json (idempotent on
+re-publish); refuses to render a blank card for an item missing output on either side (see
+`missing_output_item_arms`), or to render a truncated output as if it were a complete
+answer (see `truncated_item_arms`) -- the CLI gates both refusals, this module renders the
+marked-up content once each is waived. The page opens with a short, blind-safe
+instructions block (how to vote, that sides are blind, how to export and report) above a
+sticky actions bar so Export is never buried below every card.
 """
 
 from __future__ import annotations
@@ -12,7 +16,13 @@ import json
 import secrets
 from pathlib import Path
 
+from . import scoring as scoring_mod
+
 FOOTER_SENTENCE = "sides are shuffled per item; the key is in mapping.json, not on this page."
+
+INSTRUCTIONS_LINE_1 = "For each item, read the input, then pick the better output: A, B, or Tie (keys a / b / t; j / k to move)."
+INSTRUCTIONS_LINE_2 = "You are not told which system produced which side."
+INSTRUCTIONS_LINE_3_TEMPLATE = "When every item is voted, click Export to save votes.json, then run: pinbench report {run_name} --votes <path-to-votes.json>"
 
 
 def missing_output_item_arms(run: dict) -> list:
@@ -27,6 +37,19 @@ def missing_output_item_arms(run: dict) -> list:
             if arm is None or arm.get("output") is None:
                 missing.append((item["id"], arm_name))
     return missing
+
+
+def truncated_item_arms(run: dict) -> list:
+    """[(item_id, arm_name), ...] for every item/arm whose stop/finish reason says the
+    output was cut off by the output ceiling (see scoring.is_truncated). Empty when nothing
+    was truncated.
+    """
+    truncated = []
+    for item in run["items"]:
+        for arm_name in ("incumbent", "candidate"):
+            if scoring_mod.is_truncated(item.get(arm_name)):
+                truncated.append((item["id"], arm_name))
+    return truncated
 
 
 def build_mapping(run: dict) -> dict:
@@ -54,7 +77,9 @@ def load_or_build_mapping(run: dict, mapping_path) -> dict:
 def _side_body_html(item, arm_name) -> tuple:
     """(html, is_error) for one side. A missing or errored arm renders its error text,
     marked as an error, never a blank card (the CLI already refused unless the caller
-    passed --allow-missing)."""
+    passed --allow-missing). A truncated-but-present output renders with a visible
+    "truncated" badge above it, never silently as if it were complete (the CLI already
+    refused unless the caller passed --allow-truncated)."""
     arm = item.get(arm_name)
     if arm is None:
         return '<p class="error-text">[no output: not attempted]</p>', True
@@ -62,7 +87,10 @@ def _side_body_html(item, arm_name) -> tuple:
     if output is None:
         text = arm.get("error") or "[no output]"
         return f'<p class="error-text">{_esc(text)}</p>', True
-    return f"<p>{_esc(output)}</p>", False
+    body = f"<p>{_esc(output)}</p>"
+    if scoring_mod.is_truncated(arm):
+        body = '<p class="truncated-badge">truncated</p>' + body
+    return body, False
 
 
 def _card_html(item, mapping_entry) -> str:
@@ -105,9 +133,13 @@ _VOTE_PAGE_CSS = """\
     .side { background: #26282f; }
     .side.error { border-color: #e66; }
     .error-text { color: #f88; }
+    .truncated-badge { color: #e0a654; }
+    #actions { background: #15161a; }
   }
   h1 { font-size: 1.1rem; }
-  #progress { margin: 8px 0 16px; font-size: 0.9rem; opacity: 0.8; }
+  #instructions { font-size: 0.85rem; opacity: 0.85; margin: 4px 0 12px; }
+  #instructions p { margin: 2px 0; }
+  #progress { font-size: 0.9rem; opacity: 0.8; margin-left: auto; }
   .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 14px;
           background: #fff; }
   .card:focus { outline: 2px solid #4a90d9; }
@@ -116,12 +148,15 @@ _VOTE_PAGE_CSS = """\
   .side { flex: 1 1 260px; background: #f3f3f3; border-radius: 6px; padding: 8px; }
   .side.error { border: 1px dashed #c33; }
   .error-text { color: #a33; font-style: italic; }
+  .truncated-badge { color: #a60; font-size: 0.75rem; font-weight: 600; margin: 0 0 4px;
+                      text-transform: uppercase; letter-spacing: 0.03em; }
   .controls { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
   .vote-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #999; cursor: pointer;
               background: transparent; color: inherit; }
   .vote-btn.selected { background: #4a90d9; color: #fff; border-color: #4a90d9; }
   .note { flex: 1 1 160px; padding: 4px 6px; }
-  #actions { margin: 16px 0; display: flex; gap: 8px; }
+  #actions { margin: 0 0 16px; padding: 10px 0; display: flex; gap: 8px; align-items: center;
+             position: sticky; top: 0; background: #fafafa; z-index: 1; }
   button.action { padding: 8px 14px; border-radius: 6px; border: 1px solid #999;
                   background: transparent; color: inherit; cursor: pointer; }
   footer { margin-top: 24px; font-size: 0.8rem; opacity: 0.7; }
@@ -245,6 +280,7 @@ def build_vote_html(run: dict, mapping: dict, run_name: str) -> str:
     cards_html = _cards_section(run, mapping)
     n = len(mapping)
     title = _esc(run_name)
+    report_cmd = _esc(INSTRUCTIONS_LINE_3_TEMPLATE.format(run_name=run_name))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -257,13 +293,18 @@ def build_vote_html(run: dict, mapping: dict, run_name: str) -> str:
 </head>
 <body>
 <h1>pinbench vote: {title}</h1>
-<div id="progress">0 of {n} voted</div>
-<div id="cards">
-{cards_html}
+<div id="instructions">
+  <p>{_esc(INSTRUCTIONS_LINE_1)}</p>
+  <p>{_esc(INSTRUCTIONS_LINE_2)}</p>
+  <p>{report_cmd}</p>
 </div>
 <div id="actions">
   <button class="action" id="export">Export votes.json</button>
   <button class="action" id="copy">Copy</button>
+  <span id="progress">0 of {n} voted</span>
+</div>
+<div id="cards">
+{cards_html}
 </div>
 <footer>{FOOTER_SENTENCE}</footer>
 <script>
