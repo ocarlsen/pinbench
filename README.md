@@ -251,11 +251,17 @@ one without saying so.
 |---|---|
 | `pinbench pins` | print the registry as a table |
 | `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | estimate cost, no spend |
-| `pinbench run SUITE --incumbent ID --candidate ID --cap USD [--allow-self-judge]` | run both arms (and the judge, if any), write run.json |
+| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff each provider's catalog against the last snapshot |
 | `pinbench bump SLOT --to ID --run RUN_NAME` | edit a pin, gated on a RECOMMEND report |
+| `pinbench config [--suite SUITE]` | print the effective settings and where each one came from |
+
+Every command above also takes `--config PATH` (see "Configuration"); `plan`/`run` take
+`--prices`/`--state`, and `pins`/`watch`/`bump` take `--pins`, each resolved the same way.
+`--cap` on `plan`/`run` is no longer always required at the command line -- it still has to
+come from *somewhere* (see "Configuration"), but that can be the suite or `pinbench.yaml`.
 
 Every command has `--help`. Exit codes: 0 ok, 1 error (including `vote` refusing a run with
 missing output), 2 refusal before any spend, 3 the cost cap was exceeded, 4 a `run` where
@@ -278,6 +284,83 @@ Anthropic's `stop_reason` or OpenAI's `finish_reason` verbatim) and prints a per
 truncated count plus a loud warning when any output hit the ceiling -- that warning is not
 itself a refusal (`run` still exits 0), because whether a few truncated items sink the
 verdict is `report`'s call, gated by `policy.max_truncated`.
+
+## Configuration
+
+An optional `pinbench.yaml` at your project root sets project-wide defaults, so you don't
+repeat `--prices`/`--state`/`--cap` on every call or paste the same `policy:` block into
+every suite. pinbench finds it by walking up from the current directory (or pass
+`--config PATH` to point at one directly); having no `pinbench.yaml` anywhere is fine --
+every setting then falls back to pinbench's own built-in defaults.
+
+```yaml
+# pinbench.yaml
+cap_usd: 0.50
+judge:
+  model: claude-opus-5-5
+  max_output_tokens: 1024
+  # rubric has no sensible generic default; a judge suite must still state its own, or
+  # loading refuses, exactly as if no pinbench.yaml existed.
+paths:
+  pins: examples/pins.yaml
+  prices: examples/prices.yaml
+  suites: examples/suites
+  runs: .pinbench
+policy:
+  min_items: 10
+  label_tolerance_points: 0.0
+  cost_tolerance: 0.25
+  require_votes_when_unlabeled: true
+  max_truncated: 0
+  recall_tolerance_points: 0.0
+  extra_tolerance: 0.5
+```
+
+`incumbent`/`candidate` are deliberately NOT a config key: which two models are being
+compared is a choice made deliberately, per run, never defaulted by a file. An unknown
+top-level or nested key, or a value of the wrong type, refuses with the key and value
+named -- never a silent fallback to the built-in default.
+
+Every setting pinbench.yaml can set follows the same precedence, applied the same way
+everywhere it is used:
+
+| precedence | example |
+|---|---|
+| 1. CLI flag | `--cap 0.75` |
+| 2. the suite's own value | a suite's top-level `cap_usd:`, or its `judge:`/`policy:` block |
+| 3. `pinbench.yaml` | this file's `cap_usd`, `judge`, `paths`, `policy` |
+| 4. built-in default | `cap_usd: null` (a cap must come from somewhere), `judge.model: claude-opus-5-5`, `.pinbench` for `paths.runs`, etc. |
+
+A `paths` value from `pinbench.yaml` is resolved relative to *that file's own directory*,
+so the same `pinbench.yaml` behaves the same regardless of which directory you run
+`pinbench` from; a `--prices`/`--state`/`--pins` flag or a built-in default path is left
+exactly as given (relative to your current directory, same as before this feature existed).
+
+`pinbench config [--suite SUITE]` prints every effective setting and which tier it came
+from -- pass `--suite` to also see how that suite's own `cap_usd`/`judge`/`policy` fold in:
+
+```
+$ pinbench config --suite examples/suites/review.yaml
+config file: /path/to/pinbench.yaml
+config hash: sha256:...
+cap_usd: 0.5  (source: config)
+judge:
+  max_output_tokens: 4096  (source: suite)
+  model: 'claude-opus-5-5'  (source: suite)
+  rubric: '...'  (source: suite)
+paths:
+  pins: /path/to/examples/pins.yaml  (source: config)
+  ...
+policy:
+  ...
+```
+
+Every `run` records its own FULL effective settings -- cap, judge/policy fallbacks, paths,
+and which config file (if any) with its content hash -- in `run.json`, with the source of
+each value. `pinbench report` reuses that exact recorded fallback to reload the suite, so a
+report built later reproduces the run correctly even if `pinbench.yaml` has since changed
+or been deleted; the report header names the config file and its hash whenever the run
+used one.
 
 ## Suite format
 

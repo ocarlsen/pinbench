@@ -184,10 +184,20 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
     return result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats
 
 
-def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None, allow_self_judge=False):
-    """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call."""
+def run(
+    suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
+    suite_path=None, allow_self_judge=False, effective_config=None,
+):
+    """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
+
+    `effective_config` (optional) is the resolved config/CLI/suite/built-in settings dict
+    the caller computed (see `config.py` and `cli.py`'s resolvers); it is recorded verbatim
+    in run.json so `pinbench report` can reload this exact suite later (judge/policy
+    fallbacks included) even if pinbench.yaml has since changed, and so the report header
+    can name which config file, if any, this run used.
+    """
     if cap_usd is None:
-        raise PlanRefused("--cap is required")
+        raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
     plan_result = plan(suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir, allow_self_judge=allow_self_judge)
     if not plan_result.within_cap:
@@ -226,6 +236,7 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
         run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
         plan_result, spent_incumbent, spent_candidate, spent_judge, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
     )
+    record["effective_config"] = effective_config
 
     _write_run_json(state_dir, run_name, record)
     return record

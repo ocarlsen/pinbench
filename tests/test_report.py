@@ -89,6 +89,46 @@ def test_render_json_is_parseable(tmp_path):
     assert payload["run_name"] == "r1"
 
 
+def test_render_text_shows_config_path_and_hash_when_used(tmp_path):
+    suite_path = _suite_path(tmp_path, n=12)
+    s = suite.load(suite_path)
+    run = _run(12, suite_path)
+    run["effective_config"] = {"config_path": "/some/pinbench.yaml", "config_hash": "sha256:abc"}
+    result = report.build_verdict(run, s, None, None)
+    text = report.render(run, s, result, fmt="text")
+    assert "Config: /some/pinbench.yaml  (sha256:abc)" in text
+
+
+def test_render_markdown_shows_config_path_and_hash_when_used(tmp_path):
+    suite_path = _suite_path(tmp_path, n=12)
+    s = suite.load(suite_path)
+    run = _run(12, suite_path)
+    run["effective_config"] = {"config_path": "/some/pinbench.yaml", "config_hash": "sha256:abc"}
+    result = report.build_verdict(run, s, None, None)
+    md = report.render(run, s, result, fmt="md")
+    assert "Config: /some/pinbench.yaml  (sha256:abc)" in md
+
+
+def test_render_json_includes_config_path_and_hash(tmp_path):
+    suite_path = _suite_path(tmp_path, n=12)
+    s = suite.load(suite_path)
+    run = _run(12, suite_path)
+    run["effective_config"] = {"config_path": "/some/pinbench.yaml", "config_hash": "sha256:abc"}
+    result = report.build_verdict(run, s, None, None)
+    payload = json.loads(report.render(run, s, result, fmt="json"))
+    assert payload["config_path"] == "/some/pinbench.yaml"
+    assert payload["config_hash"] == "sha256:abc"
+
+
+def test_render_text_omits_config_line_when_no_config_was_used(tmp_path):
+    suite_path = _suite_path(tmp_path, n=12)
+    s = suite.load(suite_path)
+    run = _run(12, suite_path)  # no effective_config key at all -- a pre-config run.json
+    result = report.build_verdict(run, s, None, None)
+    text = report.render(run, s, result, fmt="text")
+    assert "Config:" not in text
+
+
 def test_votes_json_bad_item_id_refused(tmp_path):
     suite_path = _suite_path(tmp_path, n=12, votes="optional")
     s = suite.load(suite_path)

@@ -4,8 +4,12 @@ Refuses to do: load a suite with duplicate or malformed item ids, or a suite whe
 items have `expect` and others don't while scoring.labels != none. `params` is an optional
 top-level dict of extra sampling params (e.g. temperature) sent to both arms; it defaults
 to empty, so a suite that says nothing about sampling sends nothing extra. For
-`scoring.labels: judge`, refuses a suite with no `judge:` block, or any item with no
-`rubric_points` -- a judge suite with nothing to check for is not a suite, it is a prompt.
+`scoring.labels: judge`, refuses a suite with no `judge:` block (after any `judge_defaults`
+fallback is applied), or any item with no `rubric_points` -- a judge suite with nothing to
+check for is not a suite, it is a prompt. `judge_defaults`/`policy_defaults` are optional
+fallback dicts (from `config.resolve_judge_defaults`/`resolve_policy_defaults`); omitting
+them keeps this module's own built-in defaults, so every existing caller of `load(path)` is
+unaffected -- only a caller that explicitly wants pinbench.yaml's fallbacks passes them.
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+
+from . import config as config_mod
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -92,6 +98,9 @@ class Suite:
     items: list
     params: dict = field(default_factory=dict)
     judge: Optional[JudgeConfig] = None
+    # A per-suite cost cap override. None means the suite states no opinion; the caller's
+    # precedence (cli.resolve_cap) falls through to pinbench.yaml, then the built-in None.
+    cap_usd: Optional[float] = None
 
 
 def _parse_rubric_points(raw_points, item_id) -> list:
@@ -136,18 +145,22 @@ def _parse_items(raw_items, judge_mode: bool) -> list:
     return items
 
 
-def _parse_judge(raw_judge, labels: str) -> Optional[JudgeConfig]:
+def _parse_judge(raw_judge, labels: str, defaults: Optional[dict] = None) -> Optional[JudgeConfig]:
+    """`defaults` is an optional fallback {"model", "max_output_tokens", "rubric"} (from
+    pinbench.yaml merged over the built-in table); the suite's own judge block wins per key.
+    Omitting `defaults` (the direct-call case every pre-config test uses) means no fallback
+    at all: a judge suite with no judge block still refuses, exactly as before.
+    """
     if labels != "judge":
         return None
     raw_judge = raw_judge or {}
-    model = raw_judge.get("model")
-    rubric = raw_judge.get("rubric")
+    base = defaults or {"model": None, "max_output_tokens": 1024, "rubric": None}
+    model = raw_judge.get("model", base.get("model"))
+    rubric = raw_judge.get("rubric", base.get("rubric"))
     if not model or not rubric:
         raise SuiteError("scoring.labels is 'judge' but suite has no judge.model / judge.rubric")
-    kwargs = {"model": model, "rubric": rubric}
-    if "max_output_tokens" in raw_judge:
-        kwargs["max_output_tokens"] = int(raw_judge["max_output_tokens"])
-    return JudgeConfig(**kwargs)
+    max_output_tokens = raw_judge.get("max_output_tokens", base.get("max_output_tokens", 1024))
+    return JudgeConfig(model=model, rubric=rubric, max_output_tokens=int(max_output_tokens))
 
 
 def _parse_scoring(raw) -> Scoring:
@@ -161,16 +174,22 @@ def _parse_scoring(raw) -> Scoring:
     return Scoring(labels=labels, normalize=scoring_raw.get("normalize", ["strip", "casefold", "strip_punct"]), votes=votes)
 
 
-def _parse_policy(raw) -> Policy:
+def _parse_policy(raw, defaults: Optional[dict] = None) -> Policy:
+    """`defaults` is an optional fallback dict (from pinbench.yaml merged over the built-in
+    table); a suite's own `policy:` block wins per key. Omitting `defaults` keeps this
+    module's own built-in literals -- identical to pre-config behavior."""
+    base = defaults if defaults is not None else config_mod.BUILTIN_DEFAULTS["policy"]
     policy_raw = raw.get("policy", {}) or {}
     return Policy(
-        min_items=policy_raw.get("min_items", 10),
-        label_tolerance_points=policy_raw.get("label_tolerance_points", 0.0),
-        cost_tolerance=policy_raw.get("cost_tolerance", 0.25),
-        require_votes_when_unlabeled=policy_raw.get("require_votes_when_unlabeled", True),
-        max_truncated=policy_raw.get("max_truncated", 0),
-        recall_tolerance_points=policy_raw.get("recall_tolerance_points", 0.0),
-        extra_tolerance=policy_raw.get("extra_tolerance", 0.5),
+        min_items=policy_raw.get("min_items", base["min_items"]),
+        label_tolerance_points=policy_raw.get("label_tolerance_points", base["label_tolerance_points"]),
+        cost_tolerance=policy_raw.get("cost_tolerance", base["cost_tolerance"]),
+        require_votes_when_unlabeled=policy_raw.get(
+            "require_votes_when_unlabeled", base["require_votes_when_unlabeled"]
+        ),
+        max_truncated=policy_raw.get("max_truncated", base["max_truncated"]),
+        recall_tolerance_points=policy_raw.get("recall_tolerance_points", base["recall_tolerance_points"]),
+        extra_tolerance=policy_raw.get("extra_tolerance", base["extra_tolerance"]),
     )
 
 
@@ -183,15 +202,48 @@ def _require_top_level_fields(raw, path) -> None:
         raise SuiteError(f"{path}: missing 'max_output_tokens'")
 
 
-def load(path) -> Suite:
+def raw_load(path) -> dict:
+    """Parse a suite file (YAML or JSON by extension) with no validation. Used by `load`
+    itself, and by `config.py`'s provenance peek to see which top-level/judge/policy keys a
+    suite set explicitly, without re-running full validation."""
     path = Path(path)
     text = path.read_text()
     raw = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+    return raw or {}
+
+
+def peek_overrides(path) -> dict:
+    """{"cap_usd": bool, "judge": set-of-keys, "policy": set-of-keys} -- which of those a
+    suite's own file sets explicitly, for a caller (e.g. `pinbench config`) that reports
+    where each effective value came from."""
+    raw = raw_load(path)
+    return {
+        "cap_usd": "cap_usd" in raw,
+        "judge": set((raw.get("judge") or {}).keys()),
+        "policy": set((raw.get("policy") or {}).keys()),
+    }
+
+
+def _parse_cap_usd(raw, path) -> Optional[float]:
+    if "cap_usd" not in raw:
+        return None
+    try:
+        return float(raw["cap_usd"])
+    except (TypeError, ValueError) as exc:
+        raise SuiteError(f"{path}: cap_usd={raw['cap_usd']!r} must be a number") from exc
+
+
+def load(path, judge_defaults: Optional[dict] = None, policy_defaults: Optional[dict] = None) -> Suite:
+    """`judge_defaults`/`policy_defaults` are optional config-resolved fallbacks (see the
+    module docstring); omit them to get this module's own built-in defaults untouched."""
+    path = Path(path)
+    raw = raw_load(path)
     if not raw:
         raise SuiteError(f"{path}: empty suite")
 
     scoring = _parse_scoring(raw)
-    policy = _parse_policy(raw)
+    policy = _parse_policy(raw, defaults=policy_defaults)
+    cap_usd = _parse_cap_usd(raw, path)
 
     judge_mode = scoring.labels == "judge"
     items = _parse_items(raw.get("items", []), judge_mode)
@@ -206,7 +258,7 @@ def load(path) -> Suite:
                 + ", ".join(missing)
             )
 
-    judge = _parse_judge(raw.get("judge"), scoring.labels)
+    judge = _parse_judge(raw.get("judge"), scoring.labels, defaults=judge_defaults)
     _require_top_level_fields(raw, path)
 
     return Suite(
@@ -219,6 +271,7 @@ def load(path) -> Suite:
         items=items,
         params=dict(raw.get("params") or {}),
         judge=judge,
+        cap_usd=cap_usd,
     )
 
 

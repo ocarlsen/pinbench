@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+Project configuration: an optional `pinbench.yaml` at the project root (found by walking up
+from the current directory, or `--config PATH`) sets defaults for `cap_usd`, a `judge`
+fallback block (model/max_output_tokens/rubric), `paths` (pins/prices/suites/runs, resolved
+relative to the config file's own directory), and a `policy` fallback block. Precedence is
+CLI flag > suite > `pinbench.yaml` > built-in default, applied the same way by one set of
+resolvers (`config.py`) everywhere a setting is used; `incumbent`/`candidate` are refused as
+config keys (a model comparison is chosen per run, never defaulted). Every `run` records its
+full effective settings and provenance in `run.json`, including which config file (if any)
+and its content hash; `pinbench report`'s header names the config file and hash when one was
+used, and reloads the suite using the run's own recorded judge/policy fallback so a later
+report is unaffected by `pinbench.yaml` changing or disappearing. New `pinbench config
+[--suite SUITE]` command prints the effective settings and each one's source. The judge's
+built-in default model (previously only a literal inside the example suite) now lives in
+`config.BUILTIN_DEFAULTS`, overridable by `pinbench.yaml`, with the suite's own `judge:`
+block still winning. New example `pinbench.yaml` at the repo root.
+
+Judge strict-win cost waiver correction: a judge recall strict win now waives the cost
+tolerance on its own only when the suite's `scoring.votes` is `none` (its only independent
+signal); a suite that also collects votes needs both the judge strict win and a candidate
+vote strict win to agree, matching `verdict._hold_checks`'s long-standing docstring.
+
 Blind LLM-judge scoring (`scoring.labels: judge`): a fixed, pinned judge model grades one
 arm's output at a time against a suite-level rubric and per-item rubric points, blind (no
 model ids, no side labels, randomized call order recorded per item), returning strict JSON

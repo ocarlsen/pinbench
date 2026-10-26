@@ -254,6 +254,175 @@ def test_judge_suite_rejects_duplicate_rubric_point_ids(tmp_path):
         suite.load(path)
 
 
+def test_cap_usd_optional_and_defaults_to_none(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+scoring:
+  labels: none
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    s = suite.load(path)
+    assert s.cap_usd is None
+
+
+def test_cap_usd_parsed_when_present(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+cap_usd: 1.25
+scoring:
+  labels: none
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    s = suite.load(path)
+    assert s.cap_usd == 1.25
+
+
+def test_cap_usd_bad_type_refused(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+cap_usd: "a lot"
+scoring:
+  labels: none
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    with pytest.raises(suite.SuiteError, match="cap_usd"):
+        suite.load(path)
+
+
+def test_judge_defaults_fill_in_missing_fields(tmp_path):
+    path = _write(tmp_path, _judge_suite_text(judge_block=""))
+    defaults = {"model": "fallback-judge", "max_output_tokens": 2048, "rubric": "grade it generically"}
+    s = suite.load(path, judge_defaults=defaults)
+    assert s.judge.model == "fallback-judge"
+    assert s.judge.rubric == "grade it generically"
+    assert s.judge.max_output_tokens == 2048
+
+
+def test_judge_defaults_suite_block_wins_per_key(tmp_path):
+    path = _write(tmp_path, _judge_suite_text())  # sets model: judge-model, rubric: "grade it"
+    defaults = {"model": "fallback-judge", "max_output_tokens": 2048, "rubric": "fallback rubric"}
+    s = suite.load(path, judge_defaults=defaults)
+    assert s.judge.model == "judge-model"  # suite's own value, not the fallback
+    assert s.judge.rubric == "grade it"
+    assert s.judge.max_output_tokens == 2048  # suite left this unset, so the fallback applies
+
+
+def test_judge_defaults_still_refuse_when_rubric_missing_everywhere(tmp_path):
+    path = _write(tmp_path, _judge_suite_text(judge_block="judge:\n  model: judge-model\n"))
+    defaults = {"model": "fallback-judge", "max_output_tokens": 1024, "rubric": None}
+    with pytest.raises(suite.SuiteError, match="judge"):
+        suite.load(path, judge_defaults=defaults)
+
+
+def test_policy_defaults_fill_in_missing_fields(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+scoring:
+  labels: none
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    defaults = {
+        "min_items": 3,
+        "label_tolerance_points": 1.0,
+        "cost_tolerance": 0.5,
+        "require_votes_when_unlabeled": False,
+        "max_truncated": 2,
+        "recall_tolerance_points": 1.0,
+        "extra_tolerance": 1.0,
+    }
+    s = suite.load(path, policy_defaults=defaults)
+    assert s.policy.min_items == 3
+    assert s.policy.cost_tolerance == 0.5
+    assert s.policy.require_votes_when_unlabeled is False
+
+
+def test_policy_defaults_suite_block_wins_per_key(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+scoring:
+  labels: none
+policy:
+  min_items: 99
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    defaults = {
+        "min_items": 3,
+        "label_tolerance_points": 1.0,
+        "cost_tolerance": 0.5,
+        "require_votes_when_unlabeled": False,
+        "max_truncated": 2,
+        "recall_tolerance_points": 1.0,
+        "extra_tolerance": 1.0,
+    }
+    s = suite.load(path, policy_defaults=defaults)
+    assert s.policy.min_items == 99  # suite's own value wins
+    assert s.policy.cost_tolerance == 0.5  # suite left this unset, so the fallback applies
+
+
+def test_peek_overrides_reports_suite_set_keys(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "x"
+max_output_tokens: 8
+cap_usd: 2.0
+scoring:
+  labels: none
+policy:
+  min_items: 5
+items:
+  - id: a1
+    input: "hi"
+""",
+    )
+    overrides = suite.peek_overrides(path)
+    assert overrides["cap_usd"] is True
+    assert overrides["policy"] == {"min_items"}
+    assert overrides["judge"] == set()
+
+
 def test_freeze_hash_sensitive_to_rubric_points(tmp_path):
     path1 = _write(tmp_path, _judge_suite_text(), name="a.yaml")
     other_points = '      - id: p1\n        description: "a different description"'

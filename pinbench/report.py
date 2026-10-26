@@ -29,9 +29,22 @@ def build_verdict(run: dict, suite, votes: Optional[dict], mapping: Optional[dic
     return verdict_mod.decide(run, suite, votes=votes, mapping=mapping)
 
 
+def _config_line(run: dict) -> Optional[str]:
+    """'Config: <path>  (<hash>)' when this run used a pinbench.yaml, else None -- a run
+    with no effective_config (pre-config run.json) or no config file found prints nothing."""
+    effective = run.get("effective_config") or {}
+    config_path = effective.get("config_path")
+    if not config_path:
+        return None
+    return f"Config: {config_path}  ({effective.get('config_hash')})"
+
+
 def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
     lines = []
     lines.append(f"Run: {run['run_name']}  ({run['incumbent']} vs {run['candidate']})")
+    config_line = _config_line(run)
+    if config_line:
+        lines.append(config_line)
     if run.get("judge_model"):
         lines.append(f"Judge: {run['judge_model']}  (prompt {run['judge_prompt_hash']})")
     lines.append(
@@ -65,6 +78,10 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
     lines.append(f"# pinbench report: {run['run_name']}")
     lines.append("")
     lines.append(f"**{run['incumbent']}** (incumbent) vs **{run['candidate']}** (candidate)")
+    config_line = _config_line(run)
+    if config_line:
+        lines.append("")
+        lines.append(config_line)
     if run.get("judge_model"):
         lines.append("")
         lines.append(f"Judge: `{run['judge_model']}` (prompt `{run['judge_prompt_hash']}`)")
@@ -99,6 +116,8 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "candidate": run["candidate"],
         "judge_model": run.get("judge_model"),
         "judge_prompt_hash": run.get("judge_prompt_hash"),
+        "config_path": (run.get("effective_config") or {}).get("config_path"),
+        "config_hash": (run.get("effective_config") or {}).get("config_hash"),
         "items_completed": run["items_completed"],
         "items_total": run["items_total"],
         "stopped_early": run.get("stopped_early", False),

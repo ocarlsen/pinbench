@@ -1,0 +1,42 @@
+# Example pinbench.yaml. This file is found by walking up from the current directory (or
+# pass --config PATH); see the README's "Configuration" section for the full precedence
+# rule: CLI flag > suite > this file > built-in default.
+#
+# Nothing here is required -- delete any key, or the whole file, and pinbench falls back to
+# its built-in defaults. `incumbent`/`candidate` are deliberately NOT supported here: which
+# two models are being compared is a per-run choice, never a default.
+
+# A default cost cap, used when a `run`/`plan` is given neither --cap nor a suite-level
+# cap_usd. Still required somewhere -- a run with no cap anywhere refuses before spending.
+cap_usd: 0.50
+
+# The judge block's FALLBACK: used only for a field a suite's own `judge:` block omits. A
+# suite's judge block always wins per key over this; this block always wins over the
+# built-in table in config.py. `examples/suites/review.yaml` sets its own judge.model and
+# judge.max_output_tokens (Opus 5.5 needs a generous ceiling -- see that file's comment), so
+# this fallback would only apply to a *new* judge suite that leaves those out.
+judge:
+  model: claude-opus-5-5
+  max_output_tokens: 1024
+  # rubric has no sensible generic default (grading criteria are suite-specific); leave it
+  # unset here and every judge suite must state its own, or loading refuses.
+
+# Paths are relative to THIS file's own directory, so this example resolves the same way
+# regardless of which directory you run pinbench from.
+paths:
+  pins: examples/pins.yaml
+  prices: examples/prices.yaml
+  suites: examples/suites
+  runs: .pinbench
+
+# Policy fallbacks: used only for a field a suite's own `policy:` block omits. Matches
+# pinbench's built-in defaults here, so this section is a no-op placeholder you can edit --
+# e.g. loosen cost_tolerance project-wide without touching every suite file.
+policy:
+  min_items: 10
+  label_tolerance_points: 0.0
+  cost_tolerance: 0.25
+  require_votes_when_unlabeled: true
+  max_truncated: 0
+  recall_tolerance_points: 0.0
+  extra_tolerance: 0.5
