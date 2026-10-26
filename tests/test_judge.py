@@ -215,3 +215,35 @@ def test_assert_comparable_non_judge_run_refuses():
     run_b = {"judge_model": "judge-model", "judge_prompt_hash": "sha256:bbb"}
     with pytest.raises(judge.JudgeMismatch):
         judge.assert_comparable(run_a, run_b)
+
+
+def test_judge_output_truncated_reply_is_a_judge_error_even_if_fragment_parses(monkeypatch):
+    # A reply cut off at the ceiling is never parsed: even a fragment that happens to be
+    # valid JSON is not the judge's finished answer.
+    s, item = _judge_suite()
+    raw = json.dumps({"hit": ["bug-a"], "extra": 0, "notes": "cut"})
+    adapter = _FakeJudgeAdapter([providers.Reply(output=raw, input_tokens=10, output_tokens=1024, latency_ms=5, stop_reason="max_tokens")])
+    monkeypatch.setattr(providers, "route", lambda model_id: adapter)
+    outcome, _reply = judge.judge_output("judge-model", item, s, "some output", api_key="k")
+    assert outcome.error is not None
+    assert "truncated" in outcome.error
+    assert outcome.hit == []
+
+
+def test_run_judge_stage_sends_the_judge_models_request_defaults(monkeypatch):
+    # The judge model's own request_defaults (e.g. how it turns thinking off) travel with
+    # every judge call, exactly as an arm's do.
+    s, item = _judge_suite()
+    seen = []
+
+    class _Adapter:
+        def call(self, model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):
+            seen.append(params)
+            return _reply(output=json.dumps({"hit": [], "extra": 0, "notes": "ok"}))
+
+    monkeypatch.setattr(providers, "route", lambda model_id: _Adapter())
+    price = prices.PriceRow(model="judge-model", input=1.0, output=2.0, source="https://x", request_defaults={"thinking": {"type": "disabled"}})
+    meter = cost.CostMeter(cap_usd=100.0)
+    record, stopped = judge.run_judge_stage(meter, "judge-model", price, "k", s, item, {"incumbent": "a", "candidate": "b"})
+    assert stopped is False
+    assert seen == [{"thinking": {"type": "disabled"}}, {"thinking": {"type": "disabled"}}]

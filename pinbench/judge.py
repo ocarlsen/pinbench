@@ -20,6 +20,7 @@ from typing import Optional
 
 from . import cost as cost_mod
 from . import providers
+from . import scoring as scoring_mod
 
 # Fixed across every call: the only things that vary per call are the rubric (suite-level,
 # folded into the prompt hash) and the single output being graded. Never mentions "incumbent"
@@ -137,6 +138,11 @@ def judge_output(judge_id, item, suite, output_text, api_key, params=None):
     reply = adapter.call(judge_id, system, user, suite.judge.max_output_tokens, api_key, params=params)
     if reply.error is not None:
         return JudgeOutcome(hit=[], extra=0, notes="", error=reply.error), reply
+    if reply.stop_reason in scoring_mod.TRUNCATION_STOP_REASONS:
+        # A cut-off reply is never parsed, even if the fragment happens to be valid JSON:
+        # the judge did not finish, so whatever it wrote is not its answer.
+        err = f"judge output truncated at max_output_tokens={suite.judge.max_output_tokens} (stop_reason={reply.stop_reason!r})"
+        return JudgeOutcome(hit=[], extra=0, notes="", error=err), reply
     valid_ids = [p.id for p in item.rubric_points]
     try:
         outcome = parse_response(reply.output, valid_ids)
@@ -164,7 +170,9 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, outputs:
         est = cost_mod.estimate_judge_call_cost(suite, item, judge_price)
         if not meter.check(est):
             return record, True
-        outcome, reply = judge_output(judge_id, item, suite, outputs[arm], api_key)
+        # The judge model's own request_defaults (prices.yaml) travel with it, same as an
+        # arm's do: a judge that needs a model-specific thinking/effort shape gets it.
+        outcome, reply = judge_output(judge_id, item, suite, outputs[arm], api_key, params=judge_price.request_defaults)
         cost_usd = meter.charge(cost_mod.actual_call_cost(reply, judge_price), est)
         record[arm] = _outcome_record(outcome, cost_usd)
     return record, False
