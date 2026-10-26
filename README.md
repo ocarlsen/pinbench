@@ -127,6 +127,19 @@ out to be wrong.
 never itself cost money or risk a call to an untested id. `watch` only lists models and
 diffs id strings.
 
+**Both live runs so far caught silent failures the hermetic tests had not.** The first live
+run sent every call with no sampling defaults, hit an HTTP error on both arms, and the CLI
+used to still print "items completed: 10/10", exit 0, charge the run estimate, and let
+`vote` build a page with blank A/B cards; that shape is now `test_live_run_failure_regression.py`.
+The second live run surfaced a quieter failure: 19 of 20 outputs hit `max_output_tokens`
+mid-sentence with no flag raised, and one came back an empty string -- still counted as
+succeeded -- because a current Claude model's default extended thinking spent the entire
+60-token ceiling before writing any visible text. Neither failure threw an exception or
+returned a non-2xx response; both looked, from the caller's side, like success. `run.json`
+now always records each arm's `stop_reason`, an empty extracted text is a recorded failure
+never a success, and `report`/`vote` both refuse to treat a truncated output as a complete
+one without saying so.
+
 ## Commands
 
 | command | what it does |
@@ -134,7 +147,7 @@ diffs id strings.
 | `pinbench pins` | print the registry as a table |
 | `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD]` | estimate cost, no spend |
 | `pinbench run SUITE --incumbent ID --candidate ID --cap USD` | run both arms, write run.json |
-| `pinbench vote RUN_NAME [--open] [--allow-missing]` | build the blind A/B page |
+| `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff each provider's catalog against the last snapshot |
 | `pinbench bump SLOT --to ID --run RUN_NAME` | edit a pin, gated on a RECOMMEND report |
@@ -147,9 +160,19 @@ all, items completed on both arms -- only a wholly-failed arm is exit 4.
 
 `vote` refuses (exit 1) when any item is missing output on either arm, naming the item/arm
 pairs, rather than rendering a blank card; `--allow-missing` renders those as explicit
-error cards instead. `report` folds any per-arm error above zero into an INCOMPLETE
-verdict (see Design decisions), and a 4xx error that happened before the model generated
-anything costs $0 in `run.json`, never the pre-run estimate.
+error cards instead. `vote` also refuses when any item's output was truncated by the
+output ceiling, naming the item/arm pairs; `--allow-truncated` renders those cards with a
+visible "truncated" badge instead of silently showing a cut-off answer as if it were
+complete. `report` folds any per-arm error above zero, or more than `policy.max_truncated`
+(default 0) truncated outputs on either arm, into an INCOMPLETE verdict (see Design
+decisions), and a 4xx error that happened before the model generated anything costs $0 in
+`run.json`, never the pre-run estimate.
+
+`run` always records each arm's own stop/finish reason (`stop_reason` in `run.json`,
+Anthropic's `stop_reason` or OpenAI's `finish_reason` verbatim) and prints a per-arm
+truncated count plus a loud warning when any output hit the ceiling -- that warning is not
+itself a refusal (`run` still exits 0), because whether a few truncated items sink the
+verdict is `report`'s call, gated by `policy.max_truncated`.
 
 ## Suite format
 
@@ -159,8 +182,10 @@ optional `params` dict of extra sampling params sent to both arms verbatim (empt
 default; set `params: {temperature: 0}` only if you want it and your models accept it), a
 `scoring` block (`labels: exact | contains | regex | none`, a `normalize` list, and
 whether `votes` are `required | optional | none`), a `policy` block with the decision
-rule's knobs, and a list of `items`, each with an `id`, an `input`, and an optional
-`expect`. Either every item has `expect` or none do.
+rule's knobs (including `max_truncated`, the number of truncated outputs tolerated per arm
+before the verdict refuses to call the run complete -- default 0), and a list of `items`,
+each with an `id`, an `input`, and an optional `expect`. Either every item has `expect` or
+none do.
 
 Two example suites ship in `examples/suites/`: `capitals.yaml` (12 labeled items, world
 capitals, exact match) and `summaries.yaml` (10 unlabeled items, each a short synthetic
@@ -188,8 +213,14 @@ paragraph, vote-only).
   makes the verdict INCOMPLETE, not a silent retry.
 - No confidence intervals, inter-rater agreement, or rotating reviewers; no hosted voting;
   no chat or email notifications, scheduler, or daemon (`watch` is a one-shot you cron); no
-  automatic PR creation or rollback tooling; no thinking/reasoning-effort normalization
-  across models.
+  automatic PR creation or rollback tooling; no reasoning-effort normalization across
+  models.
+- The Anthropic adapter sends `thinking: {"type": "disabled"}` by default, because current
+  Claude models run extended thinking by default and a thinking block's tokens count
+  against `max_output_tokens` -- on a suite with a low ceiling this could spend the entire
+  budget on an invisible thinking block and return an empty text output as a "success." A
+  suite that wants thinking on sets its own `params: {thinking: {...}}`, which overrides
+  the default. This only covers Anthropic; the OpenAI adapter sends no such override.
 
 ## Development
 

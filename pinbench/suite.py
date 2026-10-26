@@ -40,6 +40,11 @@ class Policy:
     label_tolerance_points: float = 0.0
     cost_tolerance: float = 0.25
     require_votes_when_unlabeled: bool = True
+    # How many truncated outputs (stop/finish reason hit the output ceiling) are tolerated
+    # per arm before the verdict refuses to call the run complete. Default 0: any truncation
+    # means the suite's max_output_tokens was too low for at least one item, and a report
+    # built on cut-off answers is not evidence either way.
+    max_truncated: int = 0
 
 
 @dataclass
@@ -106,6 +111,7 @@ def load(path) -> Suite:
         label_tolerance_points=policy_raw.get("label_tolerance_points", 0.0),
         cost_tolerance=policy_raw.get("cost_tolerance", 0.25),
         require_votes_when_unlabeled=policy_raw.get("require_votes_when_unlabeled", True),
+        max_truncated=policy_raw.get("max_truncated", 0),
     )
 
     items = _parse_items(raw.get("items", []))

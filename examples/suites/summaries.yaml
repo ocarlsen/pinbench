@@ -1,7 +1,7 @@
 version: 1
 name: summaries
-task: "Summarize in one sentence under 25 words."
-max_output_tokens: 60
+task: "Summarize in 2-3 sentences."
+max_output_tokens: 300
 scoring:
   labels: none
   normalize: [strip, casefold, strip_punct]

@@ -99,6 +99,82 @@ def test_openai_call_shape_and_parsing(monkeypatch):
     assert reply.error is None
 
 
+def test_anthropic_call_disables_thinking_by_default(monkeypatch):
+    """Current Claude models run extended thinking by default; a low max_output_tokens
+    ceiling can be spent entirely on an invisible thinking block. The adapter opts out
+    unless the suite's own params ask for thinking."""
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    body = (FIXTURES / "anthropic_message_response.json").read_bytes()
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", fake_urlopen)
+
+    anthropic_provider.call("claude-sonnet-5-5", "Answer only.", "hi", 64, "test-key")
+    assert captured["body"]["thinking"] == {"type": "disabled"}
+
+    # A suite that explicitly wants thinking overrides the default.
+    anthropic_provider.call(
+        "claude-sonnet-5-5", "Answer only.", "hi", 64, "test-key",
+        params={"thinking": {"type": "adaptive"}},
+    )
+    assert captured["body"]["thinking"] == {"type": "adaptive"}
+
+
+def test_anthropic_truncated_output_is_recorded_not_hidden(monkeypatch):
+    """Finding A from the second live run: stop_reason=max_tokens with real (but cut-off)
+    text is still a success -- but the adapter must record the stop_reason so callers can
+    tell it was truncated."""
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    body = (FIXTURES / "anthropic_truncated_response.json").read_bytes()
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", lambda req, timeout=None: _FakeResponse(body))
+
+    reply = anthropic_provider.call("claude-sonnet-5-5", "Summarize.", "...", 60, "test-key")
+    assert reply.error is None
+    assert reply.output is not None and reply.output != ""
+    assert reply.stop_reason == "max_tokens"
+
+
+def test_anthropic_empty_text_with_thinking_block_is_a_failure(monkeypatch):
+    """Finding B from the second live run: item s04 incumbent came back output_tokens=60,
+    text="", stop_reason=max_tokens -- the model spent its whole ceiling on a thinking
+    block. This must never be recorded as a success."""
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    body = (FIXTURES / "anthropic_empty_thinking_response.json").read_bytes()
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", lambda req, timeout=None: _FakeResponse(body))
+
+    reply = anthropic_provider.call("claude-sonnet-5-5", "Summarize.", "...", 60, "test-key")
+    assert reply.output is None
+    assert reply.error is not None
+    assert "empty text output" in reply.error
+    assert "max_tokens" in reply.error
+    assert "thinking" in reply.error  # the content block types list names what came back
+    assert reply.stop_reason == "max_tokens"
+    assert reply.input_tokens == 314
+    assert reply.output_tokens == 60
+
+
+def test_openai_empty_content_is_a_failure(monkeypatch):
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    body = json.dumps(
+        {
+            "id": "chatcmpl_empty",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 16},
+        }
+    ).encode("utf-8")
+    monkeypatch.setattr(openai_provider.urllib.request, "urlopen", lambda req, timeout=None: _FakeResponse(body))
+
+    reply = openai_provider.call("gpt-5-mini", "Summarize.", "...", 16, "test-key")
+    assert reply.output is None
+    assert reply.error is not None
+    assert "empty text output" in reply.error
+    assert reply.stop_reason == "length"
+
+
 def test_anthropic_http_error_becomes_reply_error(monkeypatch):
     import io
     import urllib.error

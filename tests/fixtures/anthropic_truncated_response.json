@@ -1,0 +1,9 @@
+{
+  "id": "msg_fixture_truncated",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Maple Hollow's council voted 4-1 to fund a roughly $40,000 Elm Street"}],
+  "model": "claude-sonnet-5-5",
+  "stop_reason": "max_tokens",
+  "usage": {"input_tokens": 293, "output_tokens": 60}
+}

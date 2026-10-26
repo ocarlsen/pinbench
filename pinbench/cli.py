@@ -3,7 +3,10 @@
 Refuses to do: let any subcommand touch the network or write a pin outside the documented
 exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded, 4 a `run` arm had zero
 successes). A `run` with SOME but not all items completed on both arms still exits 0 (a
-printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure.
+printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure. A
+`run` arm with any truncated output (the model hit max_output_tokens) also still exits 0,
+with a loud warning naming the count -- `report` is where truncation becomes a hard
+INCOMPLETE, and `vote` refuses to show a truncated output unless --allow-truncated.
 """
 
 from __future__ import annotations
@@ -93,10 +96,14 @@ def cmd_run(args):
     print(f"items completed: {record['items_completed']}/{record['items_total']}" + ("  STOPPED EARLY" if record["stopped_early"] else ""))
 
     zero_success_arms = []
+    truncated_arms = []
     for arm in ("incumbent", "candidate"):
         attempted = record["items_attempted"][arm]
         succeeded = record["items_succeeded"][arm]
+        truncated = scoring_mod.truncated_count(record, arm)
         line = f"{arm}: {succeeded}/{attempted} succeeded"
+        if truncated:
+            line += f", {truncated} truncated"
         if succeeded < attempted:
             first_err = scoring_mod.first_error(record, arm)
             if first_err:
@@ -104,10 +111,19 @@ def cmd_run(args):
         print(line)
         if attempted > 0 and succeeded == 0:
             zero_success_arms.append(arm)
+        if truncated:
+            truncated_arms.append((arm, truncated))
 
     if zero_success_arms:
         print(f"error: zero successes on: {', '.join(zero_success_arms)}", file=sys.stderr)
         return 4
+    for arm, truncated in truncated_arms:
+        print(
+            f"warning: {arm} had {truncated}/{record['items_total']} truncated output(s) "
+            "(stop/finish reason hit the output ceiling); raise the suite's max_output_tokens "
+            "or the report will be INCOMPLETE",
+            file=sys.stderr,
+        )
     if record["items_completed"] < record["items_total"]:
         print("warning: not every item completed on both arms", file=sys.stderr)
     return 0
@@ -125,11 +141,23 @@ def cmd_vote(args):
         )
         return 1
 
+    truncated = blind_mod.truncated_item_arms(run)
+    if truncated and not args.allow_truncated:
+        detail = ", ".join(f"{item_id}/{arm}" for item_id, arm in truncated)
+        print(
+            f"refused: {len(truncated)} item/arm pair(s) have a truncated output ({detail}); "
+            "pass --allow-truncated to render them marked as truncated",
+            file=sys.stderr,
+        )
+        return 1
+
     run_dir = _run_dir(args.state, args.run_name)
     mapping_path, html_path = blind_mod.publish(run, run_dir, args.run_name)
     print(str(html_path))
     if missing:
         print(f"warning: {len(missing)} item/arm pair(s) rendered as error cards (--allow-missing)", file=sys.stderr)
+    if truncated:
+        print(f"warning: {len(truncated)} item/arm pair(s) rendered marked truncated (--allow-truncated)", file=sys.stderr)
     if args.open:
         webbrowser.open(html_path.resolve().as_uri())
     return 0
@@ -230,6 +258,7 @@ def build_parser():
     p_vote.add_argument("--state", default=DEFAULT_STATE)
     p_vote.add_argument("--open", action="store_true")
     p_vote.add_argument("--allow-missing", action="store_true", help="render a missing-output item as an error card instead of refusing")
+    p_vote.add_argument("--allow-truncated", action="store_true", help="render a truncated-output item marked truncated instead of refusing")
     p_vote.set_defaults(func=cmd_vote)
 
     p_report = sub.add_parser("report", help="unblind, score, and print the verdict")

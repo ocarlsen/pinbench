@@ -1,6 +1,9 @@
 """OpenAI adapter: POST /v1/chat/completions for a call, GET /v1/models for the catalog.
 
-Refuses to do: open a socket when PINBENCH_NO_NETWORK=1, or call without an api_key.
+Refuses to do: open a socket when PINBENCH_NO_NETWORK=1, or call without an api_key, or
+count an empty (or whitespace-only) message content as a success -- same principle as the
+Anthropic adapter: a `finish_reason` of "length" with no content is a failure, not a $0
+success, and is recorded as such with the reason it happened.
 """
 
 from __future__ import annotations
@@ -68,14 +71,27 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
     latency_ms = int((time.monotonic() - started) * 1000)
 
     choices = data.get("choices") or []
-    output = choices[0]["message"].get("content", "") if choices else ""
+    output = (choices[0]["message"].get("content") or "") if choices else ""
+    finish_reason = choices[0].get("finish_reason") if choices else None
     usage = data.get("usage") or {}
+
+    if not output.strip():
+        return Reply(
+            output=None,
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+            latency_ms=latency_ms,
+            error=f"empty text output (finish_reason={finish_reason!r})",
+            stop_reason=finish_reason,
+        )
+
     return Reply(
         output=output,
         input_tokens=usage.get("prompt_tokens"),
         output_tokens=usage.get("completion_tokens"),
         latency_ms=latency_ms,
         error=None,
+        stop_reason=finish_reason,
     )
 
 

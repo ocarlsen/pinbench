@@ -1,7 +1,8 @@
 """Score a run.json: label agreement, vote tally, cost and latency stats.
 
 Refuses to do: treat an arm's error as anything but a miss for labels and an exclusion
-from latency stats; refuses an unknown normalize step name.
+from latency stats; refuses an unknown normalize step name; refuses to call a truncated
+output "complete" without saying so (is_truncated/truncated_count).
 """
 
 from __future__ import annotations
@@ -12,6 +13,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+
+# The vendor stop/finish reasons that mean "cut off by the output ceiling, not a natural
+# stop": Anthropic's `stop_reason` and OpenAI's `finish_reason` use different words for the
+# same event. This is the one place that mapping lives; every other module imports it.
+TRUNCATION_STOP_REASONS = {"max_tokens", "length"}
 
 
 def normalize(text: str, steps) -> str:
@@ -63,6 +69,26 @@ def label_agreement(run: dict, arm: str, mode: str, normalize_steps) -> LabelAgr
         if label_match(arm_result.get("output"), item["expect"], mode, normalize_steps):
             matched += 1
     return LabelAgreement(matched=matched, total=total)
+
+
+def is_truncated(arm_result: Optional[dict]) -> bool:
+    """True when this arm's own stop/finish reason says the output ceiling cut it off.
+
+    False for an arm that was never attempted (None) or that errored for any other reason
+    (a missing stop_reason there is not truncation, it is unknown).
+    """
+    return bool(arm_result) and arm_result.get("stop_reason") in TRUNCATION_STOP_REASONS
+
+
+def truncated_count(run: dict, arm: str) -> int:
+    return sum(1 for item in run["items"] if is_truncated(item.get(arm)))
+
+
+def first_truncated_item_id(run: dict, arm: str) -> Optional[str]:
+    for item in run["items"]:
+        if is_truncated(item.get(arm)):
+            return item["id"]
+    return None
 
 
 def error_count(run: dict, arm: str) -> int:

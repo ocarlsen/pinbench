@@ -1,0 +1,12 @@
+{
+  "id": "msg_fixture_empty_thinking",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {"type": "thinking", "thinking": "Let me work out how to summarize this in under 60 tokens...", "signature": "sig_fixture"},
+    {"type": "text", "text": ""}
+  ],
+  "model": "claude-sonnet-5-5",
+  "stop_reason": "max_tokens",
+  "usage": {"input_tokens": 314, "output_tokens": 60}
+}

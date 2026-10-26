@@ -1,6 +1,14 @@
 """Anthropic adapter: POST /v1/messages for a call, GET /v1/models for the catalog.
 
-Refuses to do: open a socket when PINBENCH_NO_NETWORK=1, or call without an api_key.
+Refuses to do: open a socket when PINBENCH_NO_NETWORK=1, or call without an api_key; count
+an empty (or whitespace-only) extracted text as a success -- current-generation Claude
+models run extended thinking by default (platform.claude.com/docs, Models overview /
+Messages API / extended thinking), and a thinking block's tokens count against a low
+max_tokens ceiling, so the model can hit the ceiling before writing any visible text and
+still return 200 with usage.output_tokens == max_tokens. This adapter sends
+`thinking: {"type": "disabled"}` by default -- the suite's own `params` can still turn it
+back on, since `body.update(params)` applies after -- and treats empty extracted text as a
+failure, never a success, recording the vendor's `stop_reason` either way.
 """
 
 from __future__ import annotations
@@ -37,6 +45,11 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
         "system": system,
         "messages": [{"role": "user", "content": user_input}],
         "max_tokens": max_tokens,
+        # Off by default: current Claude models think by default, and a low max_tokens
+        # ceiling (this suite's) can be spent entirely on an invisible thinking block,
+        # leaving no text. A suite that wants thinking sets its own `params.thinking` and
+        # the line below is overridden by `body.update(params)`.
+        "thinking": {"type": "disabled"},
     }
     body.update(params)
 
@@ -67,14 +80,30 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
         return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=str(exc))
     latency_ms = int((time.monotonic() - started) * 1000)
 
-    text_parts = [block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"]
+    content = data.get("content", [])
+    text_parts = [block.get("text", "") for block in content if block.get("type") == "text"]
+    output = "".join(text_parts)
+    stop_reason = data.get("stop_reason")
     usage = data.get("usage") or {}
+
+    if not output.strip():
+        block_types = [block.get("type") for block in content]
+        return Reply(
+            output=None,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            latency_ms=latency_ms,
+            error=f"empty text output (stop_reason={stop_reason!r}, content block types={block_types})",
+            stop_reason=stop_reason,
+        )
+
     return Reply(
-        output="".join(text_parts),
+        output=output,
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
         latency_ms=latency_ms,
         error=None,
+        stop_reason=stop_reason,
     )
 
 

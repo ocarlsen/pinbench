@@ -1,7 +1,10 @@
 """The decision rule: RECOMMEND / HOLD / INCOMPLETE, with every check's detail line.
 
 Refuses to do: hard-code a number in the printed rule; every number is read from the
-suite's `policy`, so changing policy changes what the report says the rule is.
+suite's `policy`, so changing policy changes what the report says the rule is. Also refuses
+to call a run complete when either arm has more truncated outputs than
+`policy.max_truncated` (default 0) -- a comparison built on cut-off answers is INCOMPLETE,
+same bucket as an arm error.
 """
 
 from __future__ import annotations
@@ -47,6 +50,21 @@ def _votes_required(suite) -> Optional[str]:
     if suite.scoring.labels == "none" and suite.policy.require_votes_when_unlabeled:
         return "the suite is unlabeled and policy.require_votes_when_unlabeled is true"
     return None
+
+
+def _check_truncation(run: dict, suite) -> Check:
+    """INCOMPLETE-causing: more than policy.max_truncated truncated outputs on EITHER arm
+    means at least one answer was cut off by max_output_tokens, not a real comparison.
+    """
+    inc_n = scoring_mod.truncated_count(run, "incumbent")
+    cand_n = scoring_mod.truncated_count(run, "candidate")
+    allowed = suite.policy.max_truncated
+    passed = inc_n <= allowed and cand_n <= allowed
+    detail = (
+        f"incumbent {inc_n} truncated, candidate {cand_n} truncated; "
+        f"allowed {allowed} per arm; {'PASS' if passed else 'FAIL'}"
+    )
+    return Check("truncation", passed, detail)
 
 
 def _check_votes_present(run: dict, suite, votes) -> Check:
@@ -144,6 +162,11 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
     if not errors_check.passed:
         return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
+    truncation_check = _check_truncation(run, suite)
+    checks.append(truncation_check)
+    if not truncation_check.passed:
+        return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
+
     votes_present = _check_votes_present(run, suite, votes)
     checks.append(votes_present)
     if not votes_present.passed:
@@ -175,12 +198,14 @@ def _rule_text(suite, n: int) -> str:
     tol = suite.policy.label_tolerance_points
     cost_pct = int(round((1 + suite.policy.cost_tolerance) * 100))
     min_items = suite.policy.min_items
+    max_truncated = suite.policy.max_truncated
     points = round(100.0 / n, 1) if n else 100.0
     return (
         f"a candidate is recommended when it is non-inferior on labels (within {tol} points), "
         "non-losing on blind votes (ties excluded), and costs no more than "
         f"{cost_pct}% of the incumbent per item, over at least {min_items} completed items with "
-        f"no errors. {n} items can show a large regression, not a small one "
+        f"no errors and no more than {max_truncated} truncated output(s) per arm. "
+        f"{n} items can show a large regression, not a small one "
         f"(1/n = {points} points); the downside of a wrong RECOMMEND is bounded by `pinbench bump` "
         "being one reverted commit."
     )

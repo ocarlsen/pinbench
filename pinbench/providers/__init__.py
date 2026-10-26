@@ -36,6 +36,11 @@ class Reply:
     # outcome is unknown). cost.py uses this to tell "refused before generating, $0" apart
     # from "unknown outcome, charge the estimate".
     status_code: Optional[int] = None
+    # The vendor's own stop/finish reason (Anthropic `stop_reason`, OpenAI `finish_reason`),
+    # verbatim, when the call got far enough to produce one. None on a transport-level
+    # failure (timeout, connection drop) or an HTTP error with no parsed body.
+    # scoring.is_truncated() is the one place that interprets this value as "truncated".
+    stop_reason: Optional[str] = None
 
 
 class NoAdapterError(ValueError):

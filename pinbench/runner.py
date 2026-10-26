@@ -242,6 +242,7 @@ def _arm_record(reply, cost_usd):
         "cost_usd": cost_usd,
         "latency_ms": reply.latency_ms,
         "error": reply.error,
+        "stop_reason": reply.stop_reason,
     }
 
 
