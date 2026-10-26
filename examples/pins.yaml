@@ -2,12 +2,12 @@
 version: 1
 slots:
   summarizer:
-    model: claude-sonnet-4-5          # exact vendor id; never an alias
+    model: claude-sonnet-5-5          # exact vendor id; dateless ids from 4.6 on are pinned snapshots, never a floating alias
     provider: anthropic               # must agree with the id prefix (validated)
     owner: owen                       # free text; who approves a bump
   classifier:
-    model: gpt-4o-mini
+    model: gpt-5-mini
     provider: openai
     owner: owen
-    hold_back: gpt-4o                 # a newer id deliberately NOT adopted
-    hold_back_reason: "lost 4-6 on blind votes against gpt-4o-mini, 2026-10-16"
+    hold_back: gpt-5-nano              # a cheaper candidate deliberately NOT adopted
+    hold_back_reason: "lost 4-6 on blind votes against gpt-5-mini, 2026-10-20"

@@ -40,8 +40,8 @@ a printed report. See the full story: [ESSAY_URL].
 pip install -e ".[dev]"
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
-pinbench plan examples/suites/capitals.yaml --incumbent claude-sonnet-4-5 --candidate gpt-4o-mini --cap 0.10
-pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-4-5 --candidate gpt-4o-mini --cap 0.10 --name demo
+pinbench plan examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate gpt-5-mini --cap 0.10
+pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate gpt-5-mini --cap 0.10 --name demo
 pinbench vote demo --open
 pinbench report demo
 ```
@@ -50,18 +50,18 @@ The example suite is 12 short items; at current prices the whole run costs under
 
 ## Sample report
 
-This is `report.md` for `examples/suites/capitals.yaml`, incumbent `claude-sonnet-4-5`
-against candidate `gpt-4o-mini`. It was produced offline by the same fake provider the
+This is `report.md` for `examples/suites/capitals.yaml`, incumbent `claude-sonnet-5-5`
+against candidate `gpt-5-mini`. It was produced offline by the same fake provider the
 tests use, with two candidate answers scripted wrong (Sydney for Australia, Istanbul for
 Turkey) to show what a HOLD looks like; it is not the output of a live API run yet.
 
 ```
 # pinbench report: capitals-demo
 
-**claude-sonnet-4-5** (incumbent) vs **gpt-4o-mini** (candidate)
+**claude-sonnet-5-5** (incumbent) vs **gpt-5-mini** (candidate)
 
 - Items: 12/12 completed
-- Spend: $0.0026 of $0.10 cap (estimate $0.0148)
+- Spend: $0.0018 of $0.10 cap (estimate $0.0113)
 
 ## Checks
 
@@ -71,7 +71,7 @@ Turkey) to show what a HOLD looks like; it is not the output of a live API run y
 | votes_present | PASS | votes not required for this suite |
 | candidate_errors | PASS | candidate had 0 errors |
 | labels | FAIL | candidate 83.3% (10/12) vs incumbent 100.0% (12/12); tolerance 0.0 points; FAIL |
-| cost | PASS | candidate $0.000010/item vs incumbent $0.000210/item (ratio 0.05, allowed 1.25); PASS |
+| cost | PASS | candidate $0.000018/item vs incumbent $0.000135/item (ratio 0.13, allowed 1.25); PASS |
 
 ## Verdict: HOLD
 
@@ -92,8 +92,8 @@ often is a regression.
 ![vote page screenshot](docs/vote-page.png)
 
 TODO(Owen): replace this sample with a live run once you authorize the metered API spend:
-`pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-4-5 --candidate
-gpt-4o-mini --cap 0.10 --name capitals-live`, then swap the report text and screenshot
+`pinbench run examples/suites/capitals.yaml --incumbent claude-sonnet-5-5 --candidate
+gpt-5-mini --cap 0.10 --name capitals-live`, then swap the report text and screenshot
 above for the real ones.
 
 ## Design decisions

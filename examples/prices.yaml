@@ -2,15 +2,15 @@
 version: 1
 checked: 2026-10-26
 models:
-  claude-sonnet-4-5:
-    input: 3.00
-    output: 15.00
-    source: "https://platform.claude.com/docs/en/about-claude/pricing"
-  gpt-4o-mini:
-    input: 0.15
-    output: 0.60
-    source: "https://developers.openai.com/api/docs/pricing"
-  gpt-4o:
-    input: 2.50
+  claude-sonnet-5-5:
+    input: 2.00
     output: 10.00
+    source: "https://platform.claude.com/docs/en/about-claude/pricing"
+  gpt-5-mini:
+    input: 0.25
+    output: 2.00
+    source: "https://developers.openai.com/api/docs/pricing"
+  gpt-5-nano:
+    input: 0.05
+    output: 0.40
     source: "https://developers.openai.com/api/docs/pricing"
