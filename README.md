@@ -53,13 +53,16 @@ A third example, `examples/suites/review.yaml`, skips the blind vote page and sc
 fixed judge model instead:
 
 ```
-pinbench plan examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.50
-pinbench run examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.50 --name review-demo
+pinbench plan examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 1.50
+pinbench run examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 1.50 --name review-demo
 pinbench report review-demo
 ```
 
 `plan` prints a third `judge` line alongside `incumbent`/`candidate`; the judge's own calls
-count against the same `--cap`. See "Judge scoring" below.
+count against the same `--cap`. The cap is higher here because the judge estimate assumes
+every judge call spends its whole `judge.max_output_tokens` ceiling (4096 in this suite,
+since the judge model always thinks and its thinking tokens count against that ceiling);
+the actual spend is usually a fraction of that. See "Judge scoring" below.
 
 ## Sample report (live run)
 
@@ -167,6 +170,20 @@ The verdict adds `judge_errors` (INCOMPLETE if nonzero, same as an arm error), `
 (HOLD unless the candidate is within `policy.recall_tolerance_points`, default 0.0, of the
 incumbent), and `judge_extra` (HOLD unless the candidate's mean extra-findings count is no
 more than `policy.extra_tolerance`, default 0.5 per item, worse than the incumbent's).
+
+For the cost check, a judge strict win (candidate recall strictly better than the incumbent
+beyond `recall_tolerance_points`, with `judge_extra` also passing) waives the cost tolerance
+the same way a label strict win plus a vote strict win does for a labeled suite. It is one
+instrument standing in for two, so treat a RECOMMEND that rests on it as "worth the money"
+by the judge's lights, not by yours.
+
+Two practical limits. The judge's `max_output_tokens` is a ceiling on its whole reply, and on
+a judge model that always thinks (Claude Opus 5.5, for one: `thinking` cannot be turned off,
+and its thinking tokens are billed as output and count against `max_tokens`) a tight ceiling
+produces a cut-off or empty reply, which is a judge error, which makes the run INCOMPLETE.
+Leave room. And the judge sees the arm's raw output: pinbench strips nothing from it, so a
+model that names itself in its answer ("As Claude, ...") unblinds that one call. The example
+suites' tasks do not invite that, but a suite whose task does should expect it.
 
 Limits, stated plainly: a judge is a model, not a ground truth, and it can agree with itself
 more readily than it agrees with a careful human -- calibrate it against a small set of human

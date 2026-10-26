@@ -12,7 +12,10 @@ policy:
   require_votes_when_unlabeled: false
 judge:
   model: claude-opus-5-5
-  max_output_tokens: 1024
+  # Opus 5.5 always thinks (see examples/prices.yaml) and its thinking tokens count against
+  # this ceiling; a cut-off reply is a judge error, and one judge error makes the whole run
+  # INCOMPLETE, so this is set well above the few dozen tokens the JSON itself needs.
+  max_output_tokens: 4096
   rubric: >
     You are reviewing a short code diff or config snippet for defects. Judge the response
     against the given rubric points only; each point describes one planted defect in the
@@ -32,7 +35,7 @@ items:
       +    return price - (price * pct)
     rubric_points:
       - id: wrong-scale
-        description: "pct is treated as already a fraction (0-1) instead of a percent (0-100), so the discount is 100x too large for any pct > 1"
+        description: "pct is treated as a fraction (0-1) instead of a percent (0-100), so the discount is 100x too large; a 20 percent discount becomes a 2000 percent one"
     decoys:
       - "the function has no input validation for negative price -- plausible-looking but not the planted defect"
   - id: r02
@@ -89,10 +92,10 @@ items:
       +++ b/auth.py
       @@
       def check_password(input_pw, stored_hash):
-      -    return hmac.compare_digest(input_pw, stored_hash)
-      +    return input_pw == stored_hash
+      -    return hmac.compare_digest(hash_pw(input_pw), stored_hash)
+      +    return hash_pw(input_pw) == stored_hash
     rubric_points:
       - id: timing-attack
         description: "the constant-time hmac.compare_digest comparison was replaced with a plain ==, reopening a timing side-channel on password comparison"
     decoys:
-      - "the hash itself is never shown to be salted -- a real concern elsewhere in a real auth system, but not this specific planted change"
+      - "hash_pw is not shown, so whether it salts is unknown -- a real concern elsewhere in a real auth system, but not this specific planted change"

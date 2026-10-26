@@ -28,10 +28,13 @@ models:
     # https://platform.claude.com/docs/en/build-with-claude/thinking shows every `thinking`
     # value other than "adaptive" (no field, "enabled", "between_tools", "disabled") returns
     # a 400 on this model; adaptive thinking is always on. Its default effort is "medium"
-    # (same page, "Migrating to adaptive thinking"); no request_defaults value here turns it
-    # off, so a judge suite using this model needs a generous judge.max_output_tokens --
-    # thinking tokens are billed as output and count against that ceiling, same failure mode
-    # as the empty-output defect this README documents for arms.
+    # (https://platform.claude.com/docs/en/build-with-claude/effort, "How effort works");
+    # no request_defaults value here turns thinking off, so a judge suite using this model
+    # needs a generous judge.max_output_tokens: thinking tokens are billed as output and
+    # count against that ceiling, the same failure mode as the empty-output defect the
+    # Anthropic adapter's docstring and the README's live-run notes describe for arms.
+    # `output_config: {effort: low}` would be the lever to shrink that spend, but it is a
+    # policy choice, not per-model truth, so it does not live in this row.
   claude-haiku-5-5:
     # Base tier (prompts <= 100,000 tokens); the API bills this rate for suites like
     # examples/suites/*.yaml, which are far under that threshold. The overview page's
