@@ -1,0 +1,13 @@
+# One line per slot. A slot is a named role in your system, not a model.
+version: 1
+slots:
+  summarizer:
+    model: claude-sonnet-4-5          # exact vendor id; never an alias
+    provider: anthropic               # must agree with the id prefix (validated)
+    owner: owen                       # free text; who approves a bump
+  classifier:
+    model: gpt-4o-mini
+    provider: openai
+    owner: owen
+    hold_back: gpt-4o                 # a newer id deliberately NOT adopted
+    hold_back_reason: "lost 4-6 on blind votes against gpt-4o-mini, 2026-10-16"

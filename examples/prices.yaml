@@ -1,0 +1,16 @@
+# USD per million tokens. Source + date per row; an unpriced model refuses to run.
+version: 1
+checked: 2026-10-26
+models:
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+    source: "https://platform.claude.com/docs/en/about-claude/pricing"
+  gpt-4o-mini:
+    input: 0.15
+    output: 0.60
+    source: "https://developers.openai.com/api/docs/pricing"
+  gpt-4o:
+    input: 2.50
+    output: 10.00
+    source: "https://developers.openai.com/api/docs/pricing"

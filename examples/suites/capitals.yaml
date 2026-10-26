@@ -1,0 +1,50 @@
+version: 1
+name: capitals
+task: "Answer with the capital city only."
+max_output_tokens: 64
+scoring:
+  labels: exact
+  normalize: [strip, casefold, strip_punct]
+  votes: none
+policy:
+  min_items: 10
+  label_tolerance_points: 0.0
+  cost_tolerance: 0.25
+  require_votes_when_unlabeled: true
+items:
+  - id: q01
+    input: "What is the capital of France?"
+    expect: "Paris"
+  - id: q02
+    input: "What is the capital of Australia?"
+    expect: "Canberra"
+  - id: q03
+    input: "What is the capital of Japan?"
+    expect: "Tokyo"
+  - id: q04
+    input: "What is the capital of Turkey?"
+    expect: "Ankara"
+  - id: q05
+    input: "What is the capital of Canada?"
+    expect: "Ottawa"
+  - id: q06
+    input: "What is the capital of Brazil?"
+    expect: "Brasilia"
+  - id: q07
+    input: "What is the capital of Egypt?"
+    expect: "Cairo"
+  - id: q08
+    input: "What is the capital of South Korea?"
+    expect: "Seoul"
+  - id: q09
+    input: "What is the capital of Kenya?"
+    expect: "Nairobi"
+  - id: q10
+    input: "What is the capital of Peru?"
+    expect: "Lima"
+  - id: q11
+    input: "What is the capital of New Zealand?"
+    expect: "Wellington"
+  - id: q12
+    input: "What is the capital of Switzerland?"
+    expect: "Bern"
