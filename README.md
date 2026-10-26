@@ -32,7 +32,7 @@ candidate that went through this process, at roughly half the price of the incum
 5, lost 4, and tied 4 of 13 frozen blind votes. I switched, because the downside of being
 wrong was bounded: one reverted commit. The next candidate through the same process lost 4
 to 6, with 3 ties, against the same incumbent and was kept out. Neither decision took more than reading
-a printed report. See the full story: [ESSAY_URL].
+a printed report. See the full story: [the essay](https://www.ocarlsen.com/model-upgrades.html).
 
 ## Quickstart
 
@@ -189,7 +189,7 @@ Limits, stated plainly: a judge is a model, not a ground truth, and it can agree
 more readily than it agrees with a careful human -- calibrate it against a small set of human
 labels before trusting it for a real bump decision, the same way you would not trust a label
 check you had never spot-checked. This tool does not build that calibration step for you; see
-[ESSAY_URL] for the longer argument on checking any judge, human or model, against ground
+[the essay](https://www.ocarlsen.com/model-upgrades.html) for the longer argument on checking any judge, human or model, against ground
 truth before it gets to decide anything.
 
 ## Design decisions
