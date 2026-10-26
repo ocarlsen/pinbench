@@ -1,0 +1,9 @@
+{
+  "id": "msg_fixture_001",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Paris"}],
+  "model": "claude-sonnet-4-5",
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 23, "output_tokens": 2}
+}

@@ -1,0 +1,9 @@
+{
+  "id": "chatcmpl_fixture_001",
+  "object": "chat.completion",
+  "model": "gpt-4o-mini",
+  "choices": [
+    {"index": 0, "message": {"role": "assistant", "content": "Paris."}, "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 21, "completion_tokens": 3, "total_tokens": 24}
+}
