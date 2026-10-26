@@ -299,13 +299,12 @@ every setting then falls back to pinbench's own built-in defaults.
 cap_usd: 0.50
 judge:
   model: claude-opus-5-5
-  max_output_tokens: 1024
+  max_output_tokens: 4096
   # rubric has no sensible generic default; a judge suite must still state its own, or
   # loading refuses, exactly as if no pinbench.yaml existed.
 paths:
   pins: examples/pins.yaml
   prices: examples/prices.yaml
-  suites: examples/suites
   runs: .pinbench
 policy:
   min_items: 10

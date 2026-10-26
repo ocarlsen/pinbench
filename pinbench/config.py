@@ -30,7 +30,7 @@ CONFIG_FILENAME = "pinbench.yaml"
 _TOP_KEYS = {"cap_usd", "judge", "paths", "policy"}
 _FORBIDDEN_TOP_KEYS = {"incumbent", "candidate"}
 _JUDGE_KEYS = {"model", "max_output_tokens", "rubric"}
-_PATH_KEYS = {"pins", "prices", "suites", "runs"}
+_PATH_KEYS = {"pins", "prices", "runs"}
 _POLICY_INT_KEYS = {"min_items", "max_truncated"}
 _POLICY_FLOAT_KEYS = {"label_tolerance_points", "cost_tolerance", "recall_tolerance_points", "extra_tolerance"}
 _POLICY_BOOL_KEYS = {"require_votes_when_unlabeled"}
@@ -41,11 +41,10 @@ _POLICY_KEYS = _POLICY_INT_KEYS | _POLICY_FLOAT_KEYS | _POLICY_BOOL_KEYS
 # suite's own `judge:` block still wins over both.
 BUILTIN_DEFAULTS = {
     "cap_usd": None,
-    "judge": {"model": "claude-opus-5-5", "max_output_tokens": 1024, "rubric": None},
+    "judge": {"model": "claude-opus-5-5", "max_output_tokens": 4096, "rubric": None},
     "paths": {
         "pins": "examples/pins.yaml",
         "prices": "examples/prices.yaml",
-        "suites": "examples/suites",
         "runs": ".pinbench",
     },
     "policy": {

@@ -17,7 +17,7 @@ cap_usd: 0.50
 # this fallback would only apply to a *new* judge suite that leaves those out.
 judge:
   model: claude-opus-5-5
-  max_output_tokens: 1024
+  max_output_tokens: 4096
   # rubric has no sensible generic default (grading criteria are suite-specific); leave it
   # unset here and every judge suite must state its own, or loading refuses.
 
@@ -26,7 +26,6 @@ judge:
 paths:
   pins: examples/pins.yaml
   prices: examples/prices.yaml
-  suites: examples/suites
   runs: .pinbench
 
 # Policy fallbacks: used only for a field a suite's own `policy:` block omits. Matches
