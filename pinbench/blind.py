@@ -1,7 +1,9 @@
 """Build the blind A/B mapping and the self-contained vote.html page.
 
 Refuses to do: put a model id or the words incumbent/candidate inside a vote card; refuses
-to re-shuffle an existing mapping.json (idempotent on re-publish).
+to re-shuffle an existing mapping.json (idempotent on re-publish); refuses to render a
+blank card for an item missing output on either side (see `missing_output_item_arms`) --
+the CLI gates that refusal, this module renders the error text instead once it is waived.
 """
 
 from __future__ import annotations
@@ -13,12 +15,27 @@ from pathlib import Path
 FOOTER_SENTENCE = "sides are shuffled per item; the key is in mapping.json, not on this page."
 
 
+def missing_output_item_arms(run: dict) -> list:
+    """[(item_id, arm_name), ...] for every item where that arm has no output: either the
+    arm was never attempted (None, e.g. the meter stopped before it) or it was attempted
+    and errored (output is None). Empty when every item has both outputs.
+    """
+    missing = []
+    for item in run["items"]:
+        for arm_name in ("incumbent", "candidate"):
+            arm = item.get(arm_name)
+            if arm is None or arm.get("output") is None:
+                missing.append((item["id"], arm_name))
+    return missing
+
+
 def build_mapping(run: dict) -> dict:
+    """Covers every item, including one missing output on a side -- the caller decides
+    whether that is a refusal (default) or renders an error card (--allow-missing).
+    """
     rng = secrets.SystemRandom()
     mapping = {}
     for item in run["items"]:
-        if item.get("candidate") is None:
-            continue
         sides = ["incumbent", "candidate"]
         rng.shuffle(sides)
         mapping[item["id"]] = {"A": sides[0], "B": sides[1]}
@@ -34,15 +51,31 @@ def load_or_build_mapping(run: dict, mapping_path) -> dict:
     return mapping
 
 
+def _side_body_html(item, arm_name) -> tuple:
+    """(html, is_error) for one side. A missing or errored arm renders its error text,
+    marked as an error, never a blank card (the CLI already refused unless the caller
+    passed --allow-missing)."""
+    arm = item.get(arm_name)
+    if arm is None:
+        return '<p class="error-text">[no output: not attempted]</p>', True
+    output = arm.get("output")
+    if output is None:
+        text = arm.get("error") or "[no output]"
+        return f'<p class="error-text">{_esc(text)}</p>', True
+    return f"<p>{_esc(output)}</p>", False
+
+
 def _card_html(item, mapping_entry) -> str:
-    a_output = item[mapping_entry["A"]]["output"] or ""
-    b_output = item[mapping_entry["B"]]["output"] or ""
+    a_html, a_error = _side_body_html(item, mapping_entry["A"])
+    b_html, b_error = _side_body_html(item, mapping_entry["B"])
+    a_class = "side error" if a_error else "side"
+    b_class = "side error" if b_error else "side"
     return f"""
     <div class="card" data-id="{item['id']}" tabindex="0">
       <div class="input"><strong>Input</strong><p>{_esc(item['input'])}</p></div>
       <div class="outputs">
-        <div class="side" data-side="A"><strong>A</strong><p>{_esc(a_output)}</p></div>
-        <div class="side" data-side="B"><strong>B</strong><p>{_esc(b_output)}</p></div>
+        <div class="{a_class}" data-side="A"><strong>A</strong>{a_html}</div>
+        <div class="{b_class}" data-side="B"><strong>B</strong>{b_html}</div>
       </div>
       <div class="controls">
         <button class="vote-btn" data-vote="A">A</button>
@@ -70,6 +103,8 @@ _VOTE_PAGE_CSS = """\
     body { background: #15161a; color: #e6e6e6; }
     .card { background: #1f2127; border-color: #333; }
     .side { background: #26282f; }
+    .side.error { border-color: #e66; }
+    .error-text { color: #f88; }
   }
   h1 { font-size: 1.1rem; }
   #progress { margin: 8px 0 16px; font-size: 0.9rem; opacity: 0.8; }
@@ -79,6 +114,8 @@ _VOTE_PAGE_CSS = """\
   .card.voted { opacity: 0.6; }
   .outputs { display: flex; gap: 10px; flex-wrap: wrap; }
   .side { flex: 1 1 260px; background: #f3f3f3; border-radius: 6px; padding: 8px; }
+  .side.error { border: 1px dashed #c33; }
+  .error-text { color: #a33; font-style: italic; }
   .controls { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
   .vote-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #999; cursor: pointer;
               background: transparent; color: inherit; }

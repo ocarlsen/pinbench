@@ -32,6 +32,10 @@ class Reply:
     output_tokens: Optional[int]
     latency_ms: int
     error: Optional[str] = None
+    # Set only on an HTTP error response (never on a timeout/connection drop, where the
+    # outcome is unknown). cost.py uses this to tell "refused before generating, $0" apart
+    # from "unknown outcome, charge the estimate".
+    status_code: Optional[int] = None
 
 
 class NoAdapterError(ValueError):

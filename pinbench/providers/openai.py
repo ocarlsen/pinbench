@@ -58,7 +58,10 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
     except urllib.error.HTTPError as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         detail = exc.read().decode("utf-8", errors="replace")
-        return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=f"HTTP {exc.code}: {detail[:200]}")
+        return Reply(
+            output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms,
+            error=f"HTTP {exc.code}: {detail[:200]}", status_code=exc.code,
+        )
     except urllib.error.URLError as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=str(exc))

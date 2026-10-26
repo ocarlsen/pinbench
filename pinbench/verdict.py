@@ -62,12 +62,21 @@ def _check_votes_present(run: dict, suite, votes) -> Check:
     return Check("votes_present", True, f"votes cover all {n} completed items")
 
 
-def _check_candidate_errors(run: dict) -> Check:
-    count = scoring_mod.error_count(run, "candidate")
-    if count:
-        first = scoring_mod.first_error(run, "candidate")
-        return Check("candidate_errors", False, f"candidate had {count} error(s); first: {first}")
-    return Check("candidate_errors", True, "candidate had 0 errors")
+def _check_no_arm_errors(run: dict) -> Check:
+    """INCOMPLETE-causing: either arm having ANY error means the run cannot be judged, not
+    just that the candidate looked bad. (A prior version checked only the candidate, so an
+    incumbent that errored on every item -- a broken request shape, say -- went unnoticed.)
+    """
+    inc_count = scoring_mod.error_count(run, "incumbent")
+    cand_count = scoring_mod.error_count(run, "candidate")
+    if not inc_count and not cand_count:
+        return Check("errors", True, "incumbent and candidate both had 0 errors")
+    parts = []
+    if inc_count:
+        parts.append(f"incumbent had {inc_count} error(s); first: {scoring_mod.first_error(run, 'incumbent')}")
+    if cand_count:
+        parts.append(f"candidate had {cand_count} error(s); first: {scoring_mod.first_error(run, 'candidate')}")
+    return Check("errors", False, "; ".join(parts))
 
 
 def _check_labels(run: dict, suite) -> Optional[Check]:
@@ -130,12 +139,17 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
     if not completeness.passed:
         return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
+    errors_check = _check_no_arm_errors(run)
+    checks.append(errors_check)
+    if not errors_check.passed:
+        return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
+
     votes_present = _check_votes_present(run, suite, votes)
     checks.append(votes_present)
     if not votes_present.passed:
         return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
-    hold_checks = [_check_candidate_errors(run)]
+    hold_checks = []
     label_check = _check_labels(run, suite)
     if label_check is not None:
         hold_checks.append(label_check)

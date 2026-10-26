@@ -69,10 +69,12 @@ def _check_api_keys(incumbent_id, candidate_id):
 def _default_params(suite):
     """Extra request params sent to both arms and recorded in run.json.
 
-    The output ceiling is passed to the adapter separately (each vendor names that key
-    differently); it is recorded here so run.json shows the full request shape.
+    Only what the suite explicitly sets (`suite.params`, e.g. `{"temperature": 0}`) is sent;
+    pinbench never injects a sampling default of its own. The output ceiling is passed to
+    the adapter separately (each vendor names that key differently); it is recorded here so
+    run.json shows the full request shape.
     """
-    return {"temperature": 0}
+    return dict(suite.params)
 
 
 def _recorded_params(suite, params):
@@ -80,6 +82,18 @@ def _recorded_params(suite, params):
 
 
 def _actual_cost(reply, price):
+    """None means "charge the estimate instead" (an unknown outcome); never a fabricated $0.
+
+    A request that errored before generating (an HTTP 4xx: bad request, auth, not-found,
+    rate-limited) never produced billable output, so it costs $0 -- that is known, not
+    unknown. Any other error (a 5xx, a timeout, a dropped connection after the request was
+    sent) leaves the outcome unknown, so it is charged at the estimate, same as a 2xx reply
+    with missing usage.
+    """
+    if reply.error is not None:
+        if reply.status_code is not None and 400 <= reply.status_code < 500:
+            return 0.0
+        return None
     if reply.input_tokens is None or reply.output_tokens is None:
         return None
     return reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6
@@ -92,6 +106,20 @@ def _call_arm(model_id, suite, item, params, api_keys):
     return adapter.call(model_id, suite.task, item.input, suite.max_output_tokens, api_key, params=params)
 
 
+@dataclass
+class _ArmStats:
+    attempted: int = 0
+    succeeded: int = 0
+    first_error: Optional[str] = None
+
+    def record(self, reply):
+        self.attempted += 1
+        if reply.error is None:
+            self.succeeded += 1
+        elif self.first_error is None:
+            self.first_error = reply.error
+
+
 def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys):
     """Run every item through both arms until the meter stops it. Never aborts a call in flight."""
     params = _default_params(suite)
@@ -99,12 +127,15 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
     spent_incumbent = 0.0
     spent_candidate = 0.0
     stopped_early = False
+    inc_stats = _ArmStats()
+    cand_stats = _ArmStats()
 
     for item in items:
         if not meter.check(inc_estimates[item.id]):
             stopped_early = True
             break
         inc_reply = _call_arm(incumbent_id, suite, item, params, api_keys)
+        inc_stats.record(inc_reply)
         inc_cost = meter.charge(_actual_cost(inc_reply, inc_price), inc_estimates[item.id])
         spent_incumbent += inc_cost
 
@@ -113,12 +144,14 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
             break
         cand_reply = _call_arm(candidate_id, suite, item, params, api_keys)
+        cand_stats.record(cand_reply)
         cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
         spent_candidate += cand_cost
 
         result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
 
-    return result_items, stopped_early, spent_incumbent, spent_candidate, params
+    arm_stats = {"incumbent": inc_stats, "candidate": cand_stats}
+    return result_items, stopped_early, spent_incumbent, spent_candidate, params, arm_stats
 
 
 def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None):
@@ -149,14 +182,14 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-    result_items, stopped_early, spent_incumbent, spent_candidate, params = _execute_items(
+    result_items, stopped_early, spent_incumbent, spent_candidate, params, arm_stats = _execute_items(
         items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys
     )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
     record = _build_record(
         run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-        plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items,
+        plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items, arm_stats,
     )
 
     _write_run_json(state_dir, run_name, record)
@@ -164,8 +197,14 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
 
 
 def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items):
-    items_completed = sum(1 for r in result_items if r["candidate"] is not None)
+                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items, arm_stats):
+    # An item "completed" only when BOTH arms returned real output (no error on either side);
+    # an item where one arm errored is not completed, even though both arms were attempted.
+    items_completed = sum(
+        1
+        for r in result_items
+        if r["candidate"] is not None and r["incumbent"]["output"] is not None and r["candidate"]["output"] is not None
+    )
     return {
         "run_name": run_name,
         "suite": str(suite_path) if suite_path else suite.name,
@@ -188,6 +227,8 @@ def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, start
         "stopped_early": stopped_early,
         "items_completed": items_completed,
         "items_total": len(items),
+        "items_attempted": {"incumbent": arm_stats["incumbent"].attempted, "candidate": arm_stats["candidate"].attempted},
+        "items_succeeded": {"incumbent": arm_stats["incumbent"].succeeded, "candidate": arm_stats["candidate"].succeeded},
         "request_params": {"incumbent": _recorded_params(suite, params), "candidate": _recorded_params(suite, params)},
         "items": result_items,
     }

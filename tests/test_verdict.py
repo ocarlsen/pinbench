@@ -96,14 +96,26 @@ def test_check2_unlabeled_suite_with_votes_proceeds():
     assert result.verdict == "RECOMMEND"
 
 
-def test_check3_hold_on_candidate_errors():
+def test_check3_incomplete_on_candidate_errors():
     run = _run(12, cand_err="boom")
     s = FakeSuite(min_items=10)
     result = verdict.decide(run, s)
-    assert result.verdict == "HOLD"
-    errors_check = [c for c in result.checks if c.name == "candidate_errors"][0]
+    assert result.verdict == "INCOMPLETE"
+    errors_check = [c for c in result.checks if c.name == "errors"][0]
     assert not errors_check.passed
     assert "boom" in errors_check.detail
+
+
+def test_check3_incomplete_on_incumbent_errors():
+    # A prior version only looked at the candidate; an incumbent that errors on every call
+    # (e.g. a request-shape bug) must also make the verdict INCOMPLETE, never silently pass.
+    run = _run(12, inc_err="kaboom")
+    s = FakeSuite(min_items=10)
+    result = verdict.decide(run, s)
+    assert result.verdict == "INCOMPLETE"
+    errors_check = [c for c in result.checks if c.name == "errors"][0]
+    assert not errors_check.passed
+    assert "kaboom" in errors_check.detail
 
 
 def test_check4_essay_labels_regression_holds():

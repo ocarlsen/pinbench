@@ -72,3 +72,60 @@ def test_publish_writes_both_files(tmp_path):
     assert html_path.exists()
     mapping = json.loads(mapping_path.read_text())
     assert set(mapping.keys()) == {"q00", "q01"}
+
+
+def _run_with_missing_output():
+    """Both arms attempted on every item, but every arm errored -- the exact shape of the
+    live run that first surfaced this bug: HTTP errors on both sides, output null."""
+    return {
+        "run_name": "r1",
+        "items": [
+            {
+                "id": "q00",
+                "input": "Question 0?",
+                "expect": "A0",
+                "incumbent": {"output": None, "error": "HTTP 400: temperature is deprecated"},
+                "candidate": {"output": None, "error": "HTTP 404: org must be verified"},
+            }
+        ],
+    }
+
+
+def test_missing_output_item_arms_finds_both_sides():
+    run = _run_with_missing_output()
+    missing = blind.missing_output_item_arms(run)
+    assert set(missing) == {("q00", "incumbent"), ("q00", "candidate")}
+
+
+def test_missing_output_item_arms_empty_when_complete():
+    run = _run(2)
+    assert blind.missing_output_item_arms(run) == []
+
+
+def test_card_html_renders_error_text_not_blank_for_missing_output():
+    run = _run_with_missing_output()
+    mapping = blind.build_mapping(run)
+    html = blind.build_vote_html(run, mapping, "r1")
+    assert "HTTP 400: temperature is deprecated" in html
+    assert "HTTP 404: org must be verified" in html
+    assert 'class="side error"' in html
+
+
+def test_card_html_handles_arm_never_attempted():
+    """candidate is None entirely (the meter stopped before calling it), not just errored."""
+    run = {
+        "run_name": "r1",
+        "items": [
+            {
+                "id": "q00",
+                "input": "Question 0?",
+                "expect": "A0",
+                "incumbent": {"output": "inc-answer-0", "error": None},
+                "candidate": None,
+            }
+        ],
+    }
+    mapping = blind.build_mapping(run)
+    html = blind.build_vote_html(run, mapping, "r1")
+    assert "not attempted" in html
+    assert 'class="side error"' in html

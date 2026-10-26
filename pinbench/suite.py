@@ -1,7 +1,9 @@
 """Load and validate a frozen suite of inputs (suite.yaml or suite.json).
 
 Refuses to do: load a suite with duplicate or malformed item ids, or a suite where some
-items have `expect` and others don't while scoring.labels != none.
+items have `expect` and others don't while scoring.labels != none. `params` is an optional
+top-level dict of extra sampling params (e.g. temperature) sent to both arms; it defaults
+to empty, so a suite that says nothing about sampling sends nothing extra.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ class Suite:
     scoring: Scoring
     policy: Policy
     items: list
+    params: dict = field(default_factory=dict)
 
 
 def _parse_items(raw_items) -> list:
@@ -132,6 +135,7 @@ def load(path) -> Suite:
         scoring=scoring,
         policy=policy,
         items=items,
+        params=dict(raw.get("params") or {}),
     )
 
 

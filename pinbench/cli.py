@@ -1,7 +1,9 @@
 """The pinbench command line: argparse subcommands, each dispatching to one module.
 
 Refuses to do: let any subcommand touch the network or write a pin outside the documented
-exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded).
+exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded, 4 a `run` arm had zero
+successes). A `run` with SOME but not all items completed on both arms still exits 0 (a
+printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure.
 """
 
 from __future__ import annotations
@@ -17,12 +19,14 @@ from . import prices as prices_mod
 from . import registry as registry_mod
 from . import report as report_mod
 from . import runner as runner_mod
+from . import scoring as scoring_mod
 from . import suite as suite_mod
 from . import watch as watch_mod
 
 DEFAULT_PINS = "examples/pins.yaml"
 DEFAULT_PRICES = "examples/prices.yaml"
 DEFAULT_STATE = ".pinbench"
+ERROR_TRUNCATE_CHARS = 200
 
 
 def _run_dir(state_dir, run_name):
@@ -87,14 +91,45 @@ def cmd_run(args):
 
     print(f"run {record['run_name']}: spent ${record['spent_usd']['total']:.4f} of cap ${record['cap_usd']:.2f}")
     print(f"items completed: {record['items_completed']}/{record['items_total']}" + ("  STOPPED EARLY" if record["stopped_early"] else ""))
+
+    zero_success_arms = []
+    for arm in ("incumbent", "candidate"):
+        attempted = record["items_attempted"][arm]
+        succeeded = record["items_succeeded"][arm]
+        line = f"{arm}: {succeeded}/{attempted} succeeded"
+        if succeeded < attempted:
+            first_err = scoring_mod.first_error(record, arm)
+            if first_err:
+                line += f"; first error: {first_err[:ERROR_TRUNCATE_CHARS]}"
+        print(line)
+        if attempted > 0 and succeeded == 0:
+            zero_success_arms.append(arm)
+
+    if zero_success_arms:
+        print(f"error: zero successes on: {', '.join(zero_success_arms)}", file=sys.stderr)
+        return 4
+    if record["items_completed"] < record["items_total"]:
+        print("warning: not every item completed on both arms", file=sys.stderr)
     return 0
 
 
 def cmd_vote(args):
     run = runner_mod.load_run(args.state, args.run_name)
+    missing = blind_mod.missing_output_item_arms(run)
+    if missing and not args.allow_missing:
+        detail = ", ".join(f"{item_id}/{arm}" for item_id, arm in missing)
+        print(
+            f"refused: {len(missing)} item/arm pair(s) have no output ({detail}); "
+            "pass --allow-missing to render them as error cards",
+            file=sys.stderr,
+        )
+        return 1
+
     run_dir = _run_dir(args.state, args.run_name)
     mapping_path, html_path = blind_mod.publish(run, run_dir, args.run_name)
     print(str(html_path))
+    if missing:
+        print(f"warning: {len(missing)} item/arm pair(s) rendered as error cards (--allow-missing)", file=sys.stderr)
     if args.open:
         webbrowser.open(html_path.resolve().as_uri())
     return 0
@@ -194,6 +229,7 @@ def build_parser():
     p_vote.add_argument("run_name")
     p_vote.add_argument("--state", default=DEFAULT_STATE)
     p_vote.add_argument("--open", action="store_true")
+    p_vote.add_argument("--allow-missing", action="store_true", help="render a missing-output item as an error card instead of refusing")
     p_vote.set_defaults(func=cmd_vote)
 
     p_report = sub.add_parser("report", help="unblind, score, and print the verdict")
