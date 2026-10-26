@@ -202,25 +202,31 @@ paragraph, vote-only).
   rather than guess.
 - The watch comparator is a heuristic over id strings (family and version tokens), not a
   vendor feed. It will miss a rename that does not follow the pattern.
-- Both arms get the same request: the suite's `task` as the system prompt, its
-  `max_output_tokens` as the ceiling, and whatever optional `params` the suite itself sets
-  (e.g. `params: {temperature: 0}`) -- never a sampling default pinbench injects on its
-  own. Newer models increasingly reject a fixed temperature outright, and determinism
-  was never guaranteed by setting it anyway, so the suite opts in only when it wants to.
-  Whatever was actually sent is recorded in `run.json` under `request_params`. A new
-  model's defaults can differ from the old one's (reasoning effort, for instance), and a
-  candidate that rejects a param the suite set records that rejection as an error, which
-  makes the verdict INCOMPLETE, not a silent retry.
+- Both arms get the same `task` as the system prompt and the same `max_output_tokens`
+  ceiling, but each arm's request can differ beyond that: a model's own `request_defaults`
+  row in `prices.yaml` (e.g. how it turns extended thinking off) is sent first, then the
+  suite's own optional `params` (e.g. `params: {temperature: 0}`) are applied on top and
+  win on any key both set -- pinbench never injects a sampling default of its own, only
+  what a model's registry row or the suite itself asked for. Newer models increasingly
+  reject a fixed temperature outright, and determinism was never guaranteed by setting it
+  anyway, so the suite opts in only when it wants to. Whatever was actually sent is
+  recorded in `run.json` under `request_params`, per arm. A candidate that rejects a param
+  the suite (or its own registry row) set records that rejection as an error, which makes
+  the verdict INCOMPLETE, not a silent retry.
 - No confidence intervals, inter-rater agreement, or rotating reviewers; no hosted voting;
   no chat or email notifications, scheduler, or daemon (`watch` is a one-shot you cron); no
   automatic PR creation or rollback tooling; no reasoning-effort normalization across
   models.
-- The Anthropic adapter sends `thinking: {"type": "disabled"}` by default, because current
-  Claude models run extended thinking by default and a thinking block's tokens count
-  against `max_output_tokens` -- on a suite with a low ceiling this could spend the entire
-  budget on an invisible thinking block and return an empty text output as a "success." A
-  suite that wants thinking on sets its own `params: {thinking: {...}}`, which overrides
-  the default. This only covers Anthropic; the OpenAI adapter sends no such override.
+- Current Claude models run extended thinking by default, and a thinking block's tokens
+  count against `max_output_tokens` -- on a suite with a low ceiling this could spend the
+  entire budget on an invisible thinking block and return an empty text output as a
+  "success" (see the fail-loud empty-output check above). How a given Claude model turns
+  thinking off is not one syntax across model generations (one generation accepted
+  `thinking: {"type": "disabled"}`; the next 400s on that exact value and wants
+  `{"type": "between_tools"}` instead, observed 2026-10-26), so the adapter itself carries
+  no such default -- it is a per-model `request_defaults` row in `prices.yaml`, merged
+  under the suite's own `params` (see the request_params bullet above). A model with no
+  row-level opinion gets no such key at all.
 
 ## Development
 

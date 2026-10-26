@@ -6,6 +6,11 @@ models:
     input: 2.00
     output: 10.00
     source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    # The 400 this model returns on `thinking: {"type": "disabled"}` (observed 2026-10-26,
+    # run .pinbench/runs/summaries-v3): "To turn thinking off on this model, send
+    # \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": \"disabled\"}."
+    request_defaults:
+      thinking: {type: between_tools}
   gpt-5-mini:
     input: 0.25
     output: 2.00
@@ -22,3 +27,8 @@ models:
     input: 0.10
     output: 0.50
     source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    # thinking: {"type": "disabled"} observed from the API, 2026-10-26 (run
+    # .pinbench/runs/summaries-v3: 10/10 accepted, no 400 -- not documented either way on
+    # the pricing/models pages above, so this is an observation, not a cited doc).
+    request_defaults:
+      thinking: {type: disabled}

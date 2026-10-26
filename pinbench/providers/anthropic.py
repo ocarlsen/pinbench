@@ -5,10 +5,13 @@ an empty (or whitespace-only) extracted text as a success -- current-generation 
 models run extended thinking by default (platform.claude.com/docs, Models overview /
 Messages API / extended thinking), and a thinking block's tokens count against a low
 max_tokens ceiling, so the model can hit the ceiling before writing any visible text and
-still return 200 with usage.output_tokens == max_tokens. This adapter sends
-`thinking: {"type": "disabled"}` by default -- the suite's own `params` can still turn it
-back on, since `body.update(params)` applies after -- and treats empty extracted text as a
-failure, never a success, recording the vendor's `stop_reason` either way.
+still return 200 with usage.output_tokens == max_tokens. This adapter never guesses or
+hard-codes a per-model request shape -- how (or whether) a given model turns thinking off
+is model-specific (one Claude generation took `{"type": "disabled"}`, the next 400s on
+that exact value and wants `{"type": "between_tools"}` instead) and lives as that model's
+`request_defaults` row in prices.yaml, merged in by the caller before `params` is passed
+here. This adapter treats empty extracted text as a failure, never a success, recording
+the vendor's `stop_reason` either way.
 """
 
 from __future__ import annotations
@@ -45,12 +48,10 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
         "system": system,
         "messages": [{"role": "user", "content": user_input}],
         "max_tokens": max_tokens,
-        # Off by default: current Claude models think by default, and a low max_tokens
-        # ceiling (this suite's) can be spent entirely on an invisible thinking block,
-        # leaving no text. A suite that wants thinking sets its own `params.thinking` and
-        # the line below is overridden by `body.update(params)`.
-        "thinking": {"type": "disabled"},
     }
+    # No model-specific defaults (e.g. how to turn thinking off) are set here -- the caller
+    # merges the model's own request_defaults (prices.yaml) with the suite's params before
+    # calling this function, so whatever lands in `params` is sent verbatim.
     body.update(params)
 
     req = urllib.request.Request(

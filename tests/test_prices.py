@@ -1,3 +1,5 @@
+import pytest
+
 from pinbench import prices
 
 
@@ -54,3 +56,43 @@ models:
     )
     p = prices.load(path)
     assert prices.price_ratio(p, "candidate", "incumbent") is None
+
+
+def test_request_defaults_parsed_when_present(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+checked: 2026-10-26
+models:
+  model-a:
+    input: 1.0
+    output: 2.0
+    source: "https://x"
+    request_defaults:
+      thinking: {type: between_tools}
+  model-b: {input: 0.5, output: 1.0, source: "https://y"}
+""",
+    )
+    p = prices.load(path)
+    assert prices.price_row(p, "model-a").request_defaults == {"thinking": {"type": "between_tools"}}
+    # No row-level opinion -> empty dict, never None (callers merge it unconditionally).
+    assert prices.price_row(p, "model-b").request_defaults == {}
+
+
+def test_request_defaults_must_be_a_mapping(tmp_path):
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+checked: 2026-10-26
+models:
+  model-a:
+    input: 1.0
+    output: 2.0
+    source: "https://x"
+    request_defaults: "thinking: disabled"
+""",
+    )
+    with pytest.raises(prices.PricesError, match="request_defaults must be a mapping"):
+        prices.load(path)

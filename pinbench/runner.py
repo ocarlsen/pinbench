@@ -66,15 +66,21 @@ def _check_api_keys(incumbent_id, candidate_id):
             raise PlanRefused(f"set {env_key}")
 
 
-def _default_params(suite):
-    """Extra request params sent to both arms and recorded in run.json.
+def _merged_params(price, suite):
+    """One arm's request params: the model's own request_defaults, then the suite's params
+    on top (suite wins on any key both set).
 
-    Only what the suite explicitly sets (`suite.params`, e.g. `{"temperature": 0}`) is sent;
-    pinbench never injects a sampling default of its own. The output ceiling is passed to
-    the adapter separately (each vendor names that key differently); it is recorded here so
-    run.json shows the full request shape.
+    `price.request_defaults` is per-model truth from prices.yaml -- e.g. how a given model
+    turns extended thinking off, which is not the same syntax across model generations and
+    pinbench never guesses it. A model with no request_defaults row contributes nothing, so
+    a suite that sets nothing extra either sends nothing beyond the output ceiling. The
+    output ceiling itself is passed to the adapter separately (each vendor names that key
+    differently); it is recorded alongside this dict so run.json shows the full request
+    shape actually sent.
     """
-    return dict(suite.params)
+    merged = dict(price.request_defaults)
+    merged.update(suite.params)
+    return merged
 
 
 def _recorded_params(suite, params):
@@ -122,7 +128,8 @@ class _ArmStats:
 
 def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys):
     """Run every item through both arms until the meter stops it. Never aborts a call in flight."""
-    params = _default_params(suite)
+    inc_params = _merged_params(inc_price, suite)
+    cand_params = _merged_params(cand_price, suite)
     result_items = []
     spent_incumbent = 0.0
     spent_candidate = 0.0
@@ -134,7 +141,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
         if not meter.check(inc_estimates[item.id]):
             stopped_early = True
             break
-        inc_reply = _call_arm(incumbent_id, suite, item, params, api_keys)
+        inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys)
         inc_stats.record(inc_reply)
         inc_cost = meter.charge(_actual_cost(inc_reply, inc_price), inc_estimates[item.id])
         spent_incumbent += inc_cost
@@ -143,7 +150,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             stopped_early = True
             result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
             break
-        cand_reply = _call_arm(candidate_id, suite, item, params, api_keys)
+        cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys)
         cand_stats.record(cand_reply)
         cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
         spent_candidate += cand_cost
@@ -151,7 +158,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
         result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
 
     arm_stats = {"incumbent": inc_stats, "candidate": cand_stats}
-    return result_items, stopped_early, spent_incumbent, spent_candidate, params, arm_stats
+    return result_items, stopped_early, spent_incumbent, spent_candidate, inc_params, cand_params, arm_stats
 
 
 def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench", suite_path=None):
@@ -182,14 +189,14 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-    result_items, stopped_early, spent_incumbent, spent_candidate, params, arm_stats = _execute_items(
+    result_items, stopped_early, spent_incumbent, spent_candidate, inc_params, cand_params, arm_stats = _execute_items(
         items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys
     )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
     record = _build_record(
         run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-        plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items, arm_stats,
+        plan_result, spent_incumbent, spent_candidate, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
     )
 
     _write_run_json(state_dir, run_name, record)
@@ -197,7 +204,7 @@ def run(suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=Non
 
 
 def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, params, result_items, arm_stats):
+                   plan_result, spent_incumbent, spent_candidate, stopped_early, items, inc_params, cand_params, result_items, arm_stats):
     # An item "completed" only when BOTH arms returned real output (no error on either side);
     # an item where one arm errored is not completed, even though both arms were attempted.
     items_completed = sum(
@@ -229,7 +236,7 @@ def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, start
         "items_total": len(items),
         "items_attempted": {"incumbent": arm_stats["incumbent"].attempted, "candidate": arm_stats["candidate"].attempted},
         "items_succeeded": {"incumbent": arm_stats["incumbent"].succeeded, "candidate": arm_stats["candidate"].succeeded},
-        "request_params": {"incumbent": _recorded_params(suite, params), "candidate": _recorded_params(suite, params)},
+        "request_params": {"incumbent": _recorded_params(suite, inc_params), "candidate": _recorded_params(suite, cand_params)},
         "items": result_items,
     }
 

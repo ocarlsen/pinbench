@@ -1,12 +1,14 @@
 """Load prices.yaml: USD-per-million-token rates, with a source and a checked date per row.
 
 Refuses to do: invent a price for an id that is not in the file (price_row returns None;
-callers must refuse to run rather than assume a price).
+callers must refuse to run rather than assume a price); accept a `request_defaults` that
+is not a mapping (a model's own request shape, e.g. how it turns thinking off, is per-model
+truth read from this file -- never a type the runner has to coerce or guess at).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +25,10 @@ class PriceRow:
     input: float
     output: float
     source: str = ""
+    # Per-model request shape (e.g. {"thinking": {"type": "between_tools"}}) sent on every
+    # call to this model, before the suite's own `params` are applied on top. Empty by
+    # default: a model with no row-level opinion sends nothing extra.
+    request_defaults: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -41,11 +47,15 @@ def load(path) -> Prices:
     for model, body in raw["models"].items():
         if "input" not in body or "output" not in body:
             raise PricesError(f"prices: {model} missing input/output rate")
+        request_defaults = body.get("request_defaults") or {}
+        if not isinstance(request_defaults, dict):
+            raise PricesError(f"prices: {model} request_defaults must be a mapping, got {type(request_defaults).__name__}")
         rows[model] = PriceRow(
             model=model,
             input=float(body["input"]),
             output=float(body["output"]),
             source=body.get("source", ""),
+            request_defaults=request_defaults,
         )
     return Prices(version=raw.get("version", 1), checked=str(raw.get("checked", "")), rows=rows)
 

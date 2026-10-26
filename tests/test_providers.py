@@ -99,10 +99,11 @@ def test_openai_call_shape_and_parsing(monkeypatch):
     assert reply.error is None
 
 
-def test_anthropic_call_disables_thinking_by_default(monkeypatch):
-    """Current Claude models run extended thinking by default; a low max_output_tokens
-    ceiling can be spent entirely on an invisible thinking block. The adapter opts out
-    unless the suite's own params ask for thinking."""
+def test_anthropic_call_sends_no_thinking_key_on_its_own(monkeypatch):
+    """The adapter carries no per-model request opinion of its own -- how (or whether) a
+    given Claude model turns thinking off differs by model (see pinbench/prices.py
+    request_defaults / runner._merged_params), so the adapter just forwards whatever
+    `params` the caller already merged. With no params it sends no `thinking` key at all."""
     monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
     body = (FIXTURES / "anthropic_message_response.json").read_bytes()
     captured = {}
@@ -114,14 +115,15 @@ def test_anthropic_call_disables_thinking_by_default(monkeypatch):
     monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", fake_urlopen)
 
     anthropic_provider.call("claude-sonnet-5-5", "Answer only.", "hi", 64, "test-key")
-    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert "thinking" not in captured["body"]
 
-    # A suite that explicitly wants thinking overrides the default.
+    # Whatever the caller passes in `params` (a merged model default, a suite override, or
+    # both) is forwarded verbatim.
     anthropic_provider.call(
         "claude-sonnet-5-5", "Answer only.", "hi", 64, "test-key",
-        params={"thinking": {"type": "adaptive"}},
+        params={"thinking": {"type": "between_tools"}},
     )
-    assert captured["body"]["thinking"] == {"type": "adaptive"}
+    assert captured["body"]["thinking"] == {"type": "between_tools"}
 
 
 def test_anthropic_truncated_output_is_recorded_not_hidden(monkeypatch):
