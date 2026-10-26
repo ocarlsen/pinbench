@@ -105,7 +105,7 @@ ids never appear):
 
 ### What the first live runs caught
 
-The tool was built and unit-tested offline first. The first three live runs each failed, and
+The tool was built and unit-tested offline first. The early live runs failed four times, and
 each failure became a check that now ships with it:
 
 1. **A rejected sampling parameter.** The newer model refused `temperature`, every call failed,
@@ -119,6 +119,10 @@ each failure became a check that now ships with it:
 3. **"Off" is spelled differently per model.** The two models accept different settings to turn
    reasoning off. That is a fact about each model, so it lives in the model registry
    (`request_defaults` in `prices.yaml`), not in a single hard-coded default.
+4. **A ceiling too tight for the task.** The first live judge run asked for code reviews under a
+   300-token ceiling, and all twelve reviews were cut off. The truncation check refused to score
+   them and the verdict came back INCOMPLETE instead of grading half-finished reviews. The fix
+   was in the suite, not the tool: a bullet-list task and a 1,200-token ceiling.
 
 None of these would have shown up as an error in a dashboard. They are the reason the verdict
 can come back INCOMPLETE, and the reason a report states what it checked.
@@ -194,6 +198,29 @@ labels before trusting it for a real bump decision, the same way you would not t
 check you had never spot-checked. This tool does not build that calibration step for you; see
 [the essay](https://www.ocarlsen.com/model-upgrades.html) for the longer argument on checking any judge, human or model, against ground
 truth before it gets to decide anything.
+
+### Live judge run
+
+`examples/suites/review.yaml` on 2026-10-26: six short code and config snippets, each with one
+planted defect, reviewed by `claude-sonnet-5-5` and by `claude-haiku-5-5`, then graded blind by
+`claude-opus-5-5`, one review at a time.
+
+| check | result | detail |
+|---|---|---|
+| completeness | PASS | n=6 >= 6 |
+| errors | PASS | incumbent and candidate both had 0 errors |
+| judge_errors | PASS | 0 judge errors |
+| truncation | PASS | incumbent 0 truncated, candidate 0 truncated; allowed 0 per arm; PASS |
+| votes_present | PASS | votes not required for this suite |
+| judge_recall | PASS | candidate recall 100.0% (6/6) vs incumbent 100.0% (6/6); tolerance 0.0 points; PASS |
+| judge_extra | PASS | candidate extra 0.50/item vs incumbent 1.17/item; tolerance 0.5/item; PASS |
+| cost | PASS | candidate $0.000114/item vs incumbent $0.002883/item (ratio 0.04, allowed 1.25); PASS |
+
+Verdict: **RECOMMEND**. Both models caught all six planted defects. The cheaper model raised
+fewer findings beyond the planted ones (0.50 per item against 1.17). An "extra" finding is not
+necessarily wrong, only outside the rubric, which is why it is a tolerance and not a hard
+failure. The whole run, judge included, cost $0.13 against a ceiling-based estimate of $1.25:
+the estimate assumes every call uses its full output ceiling, so it errs high on purpose.
 
 ## Design decisions
 
