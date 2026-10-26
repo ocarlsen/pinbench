@@ -31,7 +31,7 @@ The fix was not to stop upgrading, it was to make upgrading boring. The first re
 candidate that went through this process, at roughly half the price of the incumbent, won
 5, lost 4, and tied 4 of 13 frozen blind votes. I switched, because the downside of being
 wrong was bounded: one reverted commit. The next candidate through the same process lost 4
-to 6 against the same incumbent and was kept out. Neither decision took more than reading
+to 6, with 3 ties, against the same incumbent and was kept out. Neither decision took more than reading
 a printed report. See the full story: [ESSAY_URL].
 
 ## Quickstart
