@@ -120,7 +120,7 @@ def test_run_stops_early_when_actual_usage_blows_past_estimate(tmp_path, fake_ad
 
     assert record["stopped_early"] is True
     assert record["items_completed"] < record["items_total"]
-    assert record["spent_usd"]["total"] <= cap + 0.01  # one call's actual cost of slack
+    assert record["spent_usd"]["total"] <= cap + 0.01  # allow one call's actual cost of headroom
     # partial run.json present
     on_disk = json.loads((tmp_path / "state" / "runs" / "r2" / "run.json").read_text())
     assert on_disk["stopped_early"] is True

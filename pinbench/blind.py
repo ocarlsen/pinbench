@@ -64,7 +64,7 @@ def _esc(text: str) -> str:
 
 _VOTE_PAGE_CSS = """\
   :root { color-scheme: light dark; }
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto;
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 0 auto;
          padding: 16px; background: #fafafa; color: #1a1a1a; }
   @media (prefers-color-scheme: dark) {
     body { background: #15161a; color: #e6e6e6; }
