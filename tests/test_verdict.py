@@ -9,7 +9,7 @@ class FakeSuite:
 
     def __init__(
         self, labels="none", votes="optional", min_items=10, label_tol=0.0, cost_tol=0.25, normalize=None,
-        require_votes_when_unlabeled=False, recall_tol=0.0, extra_tol=0.5,
+        require_votes_when_unlabeled=False, recall_tol=0.0, extra_tol=0.5, max_truncated=0,
     ):
         self.scoring = suite_mod.Scoring(labels=labels, normalize=normalize or NORM, votes=votes)
         self.policy = suite_mod.Policy(
@@ -19,6 +19,7 @@ class FakeSuite:
             require_votes_when_unlabeled=require_votes_when_unlabeled,
             recall_tolerance_points=recall_tol,
             extra_tolerance=extra_tol,
+            max_truncated=max_truncated,
         )
 
 
@@ -380,3 +381,22 @@ def test_truncated_arm_makes_run_incomplete_via_truncation_not_judge_errors():
     # judge_errors is checked (and PASSES) before the truncation check trips the run
     # INCOMPLETE; the skip must never register there as an error.
     assert judge_errors_checks and judge_errors_checks[0].passed
+
+
+def test_tolerated_truncation_cannot_lift_recall_by_shrinking_the_denominator():
+    # policy.max_truncated=1 lets one truncated output through the truncation check, so the
+    # verdict is decided on judge recall. The candidate truncated on r0 (judge skipped, 0
+    # hits) and hit everything else: 10/12 vs the incumbent's 12/12 must HOLD. If the
+    # skipped item were dropped from the denominator instead, 10/10 would RECOMMEND.
+    items = [_judge_item(f"r{i}", ["p1", "p2"], ["p1", "p2"]) for i in range(6)]
+    items[0]["candidate"]["stop_reason"] = "max_tokens"
+    items[0]["judge"]["candidate"] = {"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}
+    run = _judge_run(items)
+    s = FakeSuite(labels="judge", min_items=6, max_truncated=1)
+    result = verdict.decide(run, s)
+    truncation_check = [c for c in result.checks if c.name == "truncation"][0]
+    assert truncation_check.passed
+    recall_check = [c for c in result.checks if c.name == "judge_recall"][0]
+    assert "(10/12)" in recall_check.detail
+    assert not recall_check.passed
+    assert result.verdict == "HOLD"

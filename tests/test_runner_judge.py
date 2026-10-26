@@ -224,10 +224,10 @@ def test_report_shows_judged_and_skipped_counts_and_verdict_incomplete_via_trunc
     assert "3 judged, 1 skipped (truncated/error)" in md
 
 
-def test_judge_metrics_computed_only_over_judged_items_in_a_mixed_run(tmp_path, fake_adapter):
-    # Mixed case: one item truncated on the incumbent (its judge call skipped, excluded),
-    # one item clean on both arms (judged normally) -- judge_recall/judge_extra_mean must
-    # reflect only the judged item, not treat the skipped one as a miss.
+def test_judge_metrics_in_a_mixed_run_score_the_skipped_item_as_a_miss(tmp_path, fake_adapter):
+    # Mixed case: one item truncated on the incumbent (its judge call skipped), one item
+    # clean on both arms (judged normally) -- judge_recall keeps the skipped item's points
+    # with zero hits, same as a judge error; judge_extra_mean leaves it out.
     s = _judge_suite(tmp_path, n=2)
     p = _prices(tmp_path)
     fake_adapter.set_reply(
@@ -239,10 +239,11 @@ def test_judge_metrics_computed_only_over_judged_items_in_a_mixed_run(tmp_path, 
     record = runner.run(s, INC_ID, CAND_ID, p, cap_usd=1.0, state_dir=tmp_path / "state", suite_path="x", name="r6")
 
     inc_recall = scoring_mod.judge_recall(record, "incumbent")
-    # q00's incumbent judge call was skipped (excluded entirely): only q01 contributes,
-    # 1 rubric point, 1 hit (the fake judge replies hit every declared rubric point).
-    assert inc_recall.points == 1
+    # q00's incumbent judge call was skipped: its 1 point stays in the denominator with 0
+    # hits; q01 contributes 1 point, 1 hit (the fake judge hits every declared point).
+    assert inc_recall.points == 2
     assert inc_recall.hits == 1
+    assert scoring_mod.judge_extra_mean(record, "incumbent") == 0.0
 
     cand_recall = scoring_mod.judge_recall(record, "candidate")
     # The candidate was judged on both items: 2 rubric points, 2 hits.

@@ -11,8 +11,9 @@ the same measurement. Refuses to call the judge at all on an arm's reply that er
 empty, or was cut off by the output ceiling (scoring.TRUNCATION_STOP_REASONS) -- the
 truncation/error check already makes that item's run INCOMPLETE, so grading the fragment
 would only spend a judge call on an answer that can never count; that arm's record instead
-carries "skipped": "<reason>" and cost_usd 0.0 (scoring.py excludes it from judge_recall,
-judge_extra_mean and judge_error_count).
+carries "skipped": "<reason>" and cost_usd 0.0 (scoring.py scores it like a judge error in
+judge_recall, zero hits over the item's points, excludes it from judge_extra_mean, and never
+counts it in judge_error_count).
 """
 
 from __future__ import annotations

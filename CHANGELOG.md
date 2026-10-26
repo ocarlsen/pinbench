@@ -7,9 +7,10 @@ empty, or was cut off by the output ceiling (`scoring.TRUNCATION_STOP_REASONS`) 
 sent to the judge (`judge.skip_reason`, `judge.run_judge_stage`). A live run had been
 spending a full judge call (about $0.10) grading a truncated output the truncation check
 then made the run INCOMPLETE over anyway. The skipped slot is recorded as
-`"skipped": "<reason>"` with `cost_usd` 0.0, and `scoring.judge_recall` /
-`judge_extra_mean` / `judge_error_count` exclude it entirely: a skip is neither a hit nor a
-miss nor a judge error. `report` prints a new "judge calls: N judged, M skipped
+`"skipped": "<reason>"` with `cost_usd` 0.0. `scoring.judge_recall` scores it like a judge
+error (points kept in the denominator, zero hits), `judge_extra_mean` leaves it out, and
+`judge_error_count` never counts it, so a truncation tolerated by `policy.max_truncated`
+cannot shrink one arm's denominator and lift its recall. `report` prints a new "judge calls: N judged, M skipped
 (truncated/error)" line, and `run` prints a loud warning when every item on one arm was
 skipped (`scoring.judge_arms_fully_skipped`). The pre-run cost estimate is unchanged (it is
 already a ceiling); only actual judge spend drops.

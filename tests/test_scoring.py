@@ -122,7 +122,7 @@ def _judge_run(judge_items):
     return {"items": items}
 
 
-def test_judge_recall_excludes_skipped_items_from_both_hits_and_points():
+def test_judge_recall_scores_a_skipped_item_as_zero_hits_over_its_points():
     run = _judge_run(
         [
             ({"hit": ["p1"], "extra": 0, "notes": "", "error": None, "skipped": None}, ("p1", "p2")),
@@ -130,10 +130,11 @@ def test_judge_recall_excludes_skipped_items_from_both_hits_and_points():
         ]
     )
     result = scoring.judge_recall(run, "candidate")
-    # Only the first (judged) item counts: 1 hit out of its 2 points. The skipped item's
-    # points and zero hits are excluded entirely, never counted as a miss.
+    # Same rule as a judge error: the skipped item's 2 points stay in the denominator with
+    # zero hits. Dropping them (1/2 instead of 1/4) would let a tolerated truncation lift
+    # this arm's recall by shrinking its denominator.
     assert result.hits == 1
-    assert result.points == 2
+    assert result.points == 4
 
 
 def test_judge_extra_mean_excludes_skipped_items():
@@ -169,3 +170,16 @@ def test_judge_skipped_and_judged_counts():
     assert scoring.judge_skipped_count(run, "incumbent") == 0
     assert scoring.judge_judged_count(run) == 2  # the hit and the error, not the skip
     assert scoring.judge_judged_count(run, "candidate") == 2
+
+
+def test_judge_arms_fully_skipped_counts_attempted_slots_not_items_total():
+    # A run the cap stopped early judged fewer items than items_total; an arm whose every
+    # ATTEMPTED slot was skipped still has no judge data and must still be named.
+    run = _judge_run(
+        [
+            ({"hit": [], "extra": 0, "notes": "", "error": None, "skipped": "skipped: arm output truncated"}, ("p1",)),
+        ]
+    )
+    run["items_total"] = 3
+    run["items_completed"] = 1
+    assert scoring.judge_arms_fully_skipped(run) == ["candidate"]

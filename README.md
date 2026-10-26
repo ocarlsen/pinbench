@@ -165,11 +165,14 @@ one-line note. A reply that is not valid JSON, or whose `hit` names an id the it
 declared, is a judge error for that item, counted and never guessed at -- same bucket as an
 arm that returned an HTTP error. An arm's own reply never even reaches the judge when it
 errored, is empty, or was itself cut off by the output ceiling: that slot is recorded as
-`"skipped": "<reason>"` with zero cost and is excluded from recall, extra, and
-`judge_errors` alike, since grading a fragment that the truncation check already makes
-this item's run INCOMPLETE over would only spend money on an answer that can never count.
-`pinbench report` prints "judge calls: N judged, M skipped (truncated/error)" so a dip in
-judge spend reads as fewer calls made, not fewer calls that happened to pass. Per arm,
+`"skipped": "<reason>"` with zero cost. For recall it scores like a judge error (the item's
+points stay in that arm's denominator with zero hits: an ungraded output earns nothing), it
+is left out of the extra mean, and it is never a `judge_errors` count. The points stay in
+on purpose: with `policy.max_truncated` above zero a truncated output does not sink the
+run, and dropping the item instead would let the arm that truncated on the hardest item
+post its recall over the easy ones. `pinbench report` prints "judge calls: N judged, M
+skipped (truncated/error)" so a dip in judge spend reads as fewer calls made, not fewer
+calls that happened to pass. Per arm,
 across the run: **recall** is hits over total rubric points, and **extra** is the mean
 "extra" count (a precision proxy: a model that hits every point by flagging everything in
 sight is not actually better). The judge's own calls are
