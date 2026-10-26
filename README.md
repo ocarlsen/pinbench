@@ -49,6 +49,18 @@ The summaries suite is 10 short passages; the live run below cost about two cent
 across providers, also export `OPENAI_API_KEY` and pass an OpenAI model id (some OpenAI models
 require a verified organization).
 
+A third example, `examples/suites/review.yaml`, skips the blind vote page and scores with a
+fixed judge model instead:
+
+```
+pinbench plan examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.50
+pinbench run examples/suites/review.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.50 --name review-demo
+pinbench report review-demo
+```
+
+`plan` prints a third `judge` line alongside `incumbent`/`candidate`; the judge's own calls
+count against the same `--cap`. See "Judge scoring" below.
+
 ## Sample report (live run)
 
 A real run on 2026-10-26: should a summarization job move from `claude-sonnet-5-5` to the much
@@ -115,6 +127,54 @@ candidate answers scripted wrong (Sydney for Australia, Istanbul for Turkey), th
 fails at 83.3% against 100%, and the verdict is HOLD even though the candidate is twenty times
 cheaper: a cheaper model that is wrong more often is a regression, and `bump` refuses the pair.
 
+## Judge scoring
+
+Exact/contains/regex matching needs a reference answer, and a blind vote needs a human to sit
+down and vote. Neither fits an open-ended task like "review this diff for defects," where the
+right answer is "did it find the planted problems," not one fixed string. A suite can declare
+`scoring.labels: judge` instead: a fixed `judge` model and a free-text `rubric` at the suite
+level, plus a per-item list of `rubric_points` (each an `id` and a `description` of one thing
+a correct response should catch) and an optional list of `decoys` (plausible-looking issues
+that are not the planted one, documentation only, never sent to the judge as if they mattered).
+
+Why a fixed judge, out loud, every run: an LLM judge is itself a model with its own failure
+modes, so letting it float between runs would hide a regression in the judge inside what looks
+like a regression in the candidate. `judge.model` is one pinned id, the same discipline this
+tool applies to `incumbent`/`candidate`, and `judge.assert_comparable` refuses to treat two
+reports as the same measurement when the judge id or the rubric (hashed into
+`judge_prompt_hash`) differs between them.
+
+Why blind: the judge call for one arm's output never sees the other arm's output, never sees a
+model id, and never sees the words "incumbent" or "candidate" -- it sees the rubric, the
+rubric point ids and descriptions, the item input, and exactly one response, presented
+identically regardless of which arm produced it. Which arm is graded first is still
+randomized per item with `secrets.SystemRandom` and recorded (`call_order` in `run.json`), the
+same discipline the vote page's A/B mapping uses, even though a single-output judge call has
+less to leak than a side-by-side vote.
+
+The judge must answer in strict JSON, `{"hit": [ids], "extra": int, "notes": str}`: which
+rubric point ids it found satisfied, a count of other real findings beyond the rubric, and a
+one-line note. A reply that is not valid JSON, or whose `hit` names an id the item never
+declared, is a judge error for that item, counted and never guessed at -- same bucket as an
+arm that returned an HTTP error. Per arm, across the run: **recall** is hits over total rubric
+points, and **extra** is the mean "extra" count (a precision proxy: a model that hits every
+point by flagging everything in sight is not actually better). The judge's own calls are
+estimated and metered against the same `--cap` as the arms (`pinbench plan` prints a third
+`judge` line), and refuse to self-judge: a suite whose judge id equals either arm's id is
+refused unless you pass `--allow-self-judge`.
+
+The verdict adds `judge_errors` (INCOMPLETE if nonzero, same as an arm error), `judge_recall`
+(HOLD unless the candidate is within `policy.recall_tolerance_points`, default 0.0, of the
+incumbent), and `judge_extra` (HOLD unless the candidate's mean extra-findings count is no
+more than `policy.extra_tolerance`, default 0.5 per item, worse than the incumbent's).
+
+Limits, stated plainly: a judge is a model, not a ground truth, and it can agree with itself
+more readily than it agrees with a careful human -- calibrate it against a small set of human
+labels before trusting it for a real bump decision, the same way you would not trust a label
+check you had never spot-checked. This tool does not build that calibration step for you; see
+[ESSAY_URL] for the longer argument on checking any judge, human or model, against ground
+truth before it gets to decide anything.
+
 ## Design decisions
 
 **Pins, not aliases.** A floating alias changes what you are running on a date the vendor
@@ -146,6 +206,12 @@ out to be wrong.
 never itself cost money or risk a call to an untested id. `watch` only lists models and
 diffs id strings.
 
+**The judge is one fixed model, named out loud.** A report that used a different judge
+model, or the same judge model with a different rubric, every time it ran would be
+measuring something new each time while looking like the same measurement. `run.json` and
+the report header record the judge's model id and a hash of its rubric, and comparing two
+runs across that boundary is a refusal (`judge.assert_comparable`), not a silent diff.
+
 **Both live runs so far caught silent failures the hermetic tests had not.** The first live
 run sent every call with no sampling defaults, hit an HTTP error on both arms, and the CLI
 used to still print "items completed: 10/10", exit 0, charge the run estimate, and let
@@ -164,8 +230,8 @@ one without saying so.
 | command | what it does |
 |---|---|
 | `pinbench pins` | print the registry as a table |
-| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD]` | estimate cost, no spend |
-| `pinbench run SUITE --incumbent ID --candidate ID --cap USD` | run both arms, write run.json |
+| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | estimate cost, no spend |
+| `pinbench run SUITE --incumbent ID --candidate ID --cap USD [--allow-self-judge]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff each provider's catalog against the last snapshot |
@@ -199,22 +265,27 @@ A suite is a frozen set of inputs in `suite.yaml` (or `.json` with the same keys
 `task` string used as the system prompt for both arms, a `max_output_tokens` ceiling, an
 optional `params` dict of extra sampling params sent to both arms verbatim (empty by
 default; set `params: {temperature: 0}` only if you want it and your models accept it), a
-`scoring` block (`labels: exact | contains | regex | none`, a `normalize` list, and
+`scoring` block (`labels: exact | contains | regex | none | judge`, a `normalize` list, and
 whether `votes` are `required | optional | none`), a `policy` block with the decision
 rule's knobs (including `max_truncated`, the number of truncated outputs tolerated per arm
-before the verdict refuses to call the run complete -- default 0), and a list of `items`,
+before the verdict refuses to call the run complete -- default 0, and, for judge suites,
+`recall_tolerance_points` and `extra_tolerance`, see "Judge scoring"), and a list of `items`,
 each with an `id`, an `input`, and an optional `expect`. Either every item has `expect` or
-none do.
+none do, unless `scoring.labels` is `judge`, in which case `expect` is not used and every
+item instead needs a non-empty `rubric_points` list (`id` + `description`) and a suite-level
+`judge` block (`model`, `rubric`, optional `max_output_tokens`).
 
-Two example suites ship in `examples/suites/`: `capitals.yaml` (12 labeled items, world
-capitals, exact match) and `summaries.yaml` (10 unlabeled items, each a short synthetic
-paragraph, vote-only).
+Three example suites ship in `examples/suites/`: `capitals.yaml` (12 labeled items, world
+capitals, exact match), `summaries.yaml` (10 unlabeled items, each a short synthetic
+paragraph, vote-only), and `review.yaml` (6 synthetic code/config snippets, each with one
+planted defect and a decoy, scored by a fixed judge model).
 
 ## Limits
 
 - Two providers: Anthropic and OpenAI. Adding a third is one file in `providers/`.
-- Label matching is exact, contains, or regex. There is no LLM-as-judge scoring mode; see
-  the design note above on why frozen inputs come first.
+- Label matching is exact, contains, or regex, or a fixed LLM judge scoring recall against a
+  rubric (see "Judge scoring"); there is no fourth mode, and a judge suite does not also
+  support `expect`-based labels on the same items.
 - n is whatever you froze. The report states what that n can and cannot detect; a 12-item
   suite cannot show a regression smaller than roughly 8 percentage points.
 - Prices are a file you maintain, not a live lookup. An unpriced model refuses to run
