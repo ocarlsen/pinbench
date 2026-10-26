@@ -40,12 +40,22 @@ def _check_completeness(run: dict, suite) -> Optional[Check]:
     return Check("completeness", True, f"n={n} >= {suite.policy.min_items}")
 
 
+def _votes_required(suite) -> Optional[str]:
+    """Why votes are required for this suite, or None when they are not."""
+    if suite.scoring.votes == "required":
+        return "scoring.votes is 'required'"
+    if suite.scoring.labels == "none" and suite.policy.require_votes_when_unlabeled:
+        return "the suite is unlabeled and policy.require_votes_when_unlabeled is true"
+    return None
+
+
 def _check_votes_present(run: dict, suite, votes) -> Check:
     n = run["items_completed"]
-    if suite.scoring.votes != "required":
+    why = _votes_required(suite)
+    if why is None:
         return Check("votes_present", True, "votes not required for this suite")
     if votes is None:
-        return Check("votes_present", False, "scoring.votes is 'required' but no votes.json was given")
+        return Check("votes_present", False, f"{why} but no votes.json was given")
     covered = sum(1 for item in run["items"] if item.get("candidate") is not None and item["id"] in votes)
     if covered < n:
         return Check("votes_present", False, f"votes cover {covered} of {n} completed items; required votes must cover all")
@@ -74,7 +84,8 @@ def _check_labels(run: dict, suite) -> Optional[Check]:
     return Check("labels", passed, detail)
 
 
-def _check_votes(run: dict, votes, mapping) -> Optional[Check]:
+def _check_votes(run: dict, votes, mapping) -> Optional[tuple]:
+    """(Check, VoteTally) when votes were given, else None."""
     if votes is None or mapping is None:
         return None
     tally = scoring_mod.unblind_votes(votes, mapping)
@@ -112,15 +123,17 @@ def _label_strict_win(run, suite) -> bool:
 def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dict] = None) -> Verdict:
     checks = []
 
+    n = run["items_completed"]
+
     completeness = _check_completeness(run, suite)
     checks.append(completeness)
     if not completeness.passed:
-        return Verdict("INCOMPLETE", checks, _rule_text(suite))
+        return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
     votes_present = _check_votes_present(run, suite, votes)
     checks.append(votes_present)
     if not votes_present.passed:
-        return Verdict("INCOMPLETE", checks, _rule_text(suite))
+        return Verdict("INCOMPLETE", checks, _rule_text(suite, n))
 
     hold_checks = [_check_candidate_errors(run)]
     label_check = _check_labels(run, suite)
@@ -140,19 +153,20 @@ def decide(run: dict, suite, votes: Optional[dict] = None, mapping: Optional[dic
 
     checks.extend(hold_checks)
     verdict_str = "RECOMMEND" if all(c.passed for c in hold_checks) else "HOLD"
-    return Verdict(verdict_str, checks, _rule_text(suite))
+    return Verdict(verdict_str, checks, _rule_text(suite, n))
 
 
-def _rule_text(suite) -> str:
+def _rule_text(suite, n: int) -> str:
+    """The rule in prose. Thresholds come from policy; the resolution sentence uses this run's n."""
     tol = suite.policy.label_tolerance_points
     cost_pct = int(round((1 + suite.policy.cost_tolerance) * 100))
     min_items = suite.policy.min_items
-    points = round(100.0 / min_items, 1) if min_items else 0.0
+    points = round(100.0 / n, 1) if n else 100.0
     return (
         f"a candidate is recommended when it is non-inferior on labels (within {tol} points), "
         "non-losing on blind votes (ties excluded), and costs no more than "
         f"{cost_pct}% of the incumbent per item, over at least {min_items} completed items with "
-        f"no errors. {min_items} items can show a large regression, not a small one "
+        f"no errors. {n} items can show a large regression, not a small one "
         f"(1/n = {points} points); the downside of a wrong RECOMMEND is bounded by `pinbench bump` "
         "being one reverted commit."
     )

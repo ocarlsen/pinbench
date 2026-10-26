@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from pinbench import providers
@@ -62,7 +60,13 @@ def fake_adapter(monkeypatch):
         providers.provider_for_id(model_id)  # still validates the prefix
         return adapter
 
+    def fake_adapter_for(provider):
+        if provider not in providers.ADAPTERS:
+            raise providers.NoAdapterError(f"no adapter for provider '{provider}'")
+        return adapter
+
     monkeypatch.setattr(providers, "route", fake_route)
+    monkeypatch.setattr(providers, "adapter_for", fake_adapter_for)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     return adapter

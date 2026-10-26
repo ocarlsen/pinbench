@@ -37,7 +37,7 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
         ],
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,  # `max_tokens` is the legacy key; o-series ids reject it
     }
     body.update(params)
 

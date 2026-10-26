@@ -149,8 +149,15 @@ _VOTE_PAGE_JS_TEMPLATE = """\
   }
   if (cards.length) cards[0].setAttribute('tabindex', '0');
 
+  cards.forEach(function(card, i) {
+    card.addEventListener('focus', function() { focusIndex = i; });
+  });
+
   document.addEventListener('keydown', function(e) {
     var active = document.activeElement;
+    var tag = active && active.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;  // typing a note, not voting
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     var idx = cards.indexOf(active);
     if (idx === -1) idx = focusIndex;
     if (e.key === 'j') { focusCard(idx + 1); e.preventDefault(); }

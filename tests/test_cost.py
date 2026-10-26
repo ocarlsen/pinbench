@@ -1,6 +1,8 @@
 import json
 import math
 
+import pytest
+
 from pinbench import cost, prices, suite
 
 
@@ -67,12 +69,8 @@ def test_estimate_run_respects_limit(tmp_path):
 
 def test_unpriced_model_raises(tmp_path):
     s = _suite(tmp_path, n=1)
-    p = _prices(tmp_path)
-    try:
+    with pytest.raises(ValueError):
         cost.estimate_arm(s, "ghost-model", None, limit=None)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
 def test_prior_measured_tokens_override_char_estimate(tmp_path):

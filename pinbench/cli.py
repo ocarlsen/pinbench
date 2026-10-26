@@ -13,13 +13,11 @@ from pathlib import Path
 
 from . import blind as blind_mod
 from . import bump as bump_mod
-from . import cost as cost_mod
 from . import prices as prices_mod
 from . import registry as registry_mod
 from . import report as report_mod
 from . import runner as runner_mod
 from . import suite as suite_mod
-from . import verdict as verdict_mod
 from . import watch as watch_mod
 
 DEFAULT_PINS = "examples/pins.yaml"

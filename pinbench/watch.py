@@ -73,10 +73,8 @@ def run_watch(pins_path, state_dir, seed: bool = False, env=None):
     snapshot = load_snapshot(state_dir)
     lines = []
     any_unreachable = False
-    providers_seen = sorted({slot.provider for slot in reg.slots.values()} | {"anthropic", "openai"})
-
-    for provider_name in providers_seen:
-        adapter = providers.route(_sample_id_for(provider_name))
+    for provider_name in sorted(providers.ADAPTERS):
+        adapter = providers.adapter_for(provider_name)
         api_key = env.get(providers.ENV_KEYS[provider_name])
         try:
             if not api_key:
@@ -98,10 +96,6 @@ def run_watch(pins_path, state_dir, seed: bool = False, env=None):
 
     save_snapshot(state_dir, snapshot)
     return lines, (1 if any_unreachable else 0)
-
-
-def _sample_id_for(provider_name: str) -> str:
-    return "claude-x" if provider_name == "anthropic" else "gpt-x"
 
 
 def _diff_provider(provider_name, prior_ids, ids, reg):

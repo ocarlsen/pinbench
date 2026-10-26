@@ -89,6 +89,8 @@ def test_openai_call_shape_and_parsing(monkeypatch):
     assert captured["url"] == "https://api.openai.com/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer test-key"
     assert captured["body"]["model"] == "gpt-4o-mini"
+    assert captured["body"]["max_completion_tokens"] == 64
+    assert "max_tokens" not in captured["body"]  # the legacy key, rejected by o-series ids
     assert captured["body"]["messages"][1]["content"] == "What is the capital of France?"
 
     assert reply.output == "Paris."

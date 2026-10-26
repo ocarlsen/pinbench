@@ -120,7 +120,16 @@ def test_run_stops_early_when_actual_usage_blows_past_estimate(tmp_path, fake_ad
 
     assert record["stopped_early"] is True
     assert record["items_completed"] < record["items_total"]
-    assert record["spent_usd"]["total"] <= cap + 0.01  # allow one call's actual cost of headroom
+    # The meter stops BEFORE the call that would cross the cap, so the only overshoot
+    # possible is one call whose actual usage ran past its own estimate.
+    one_call_max = max(
+        arm["cost_usd"] for item in record["items"] for arm in (item["incumbent"], item["candidate"]) if arm
+    )
+    assert record["spent_usd"]["total"] <= cap + one_call_max
+    assert record["spent_usd"]["total"] > cap - one_call_max  # it stopped because of the cap, not early for free
+    # Every call that was made landed in the record: calls == arms recorded (paid outputs are never lost).
+    arms_recorded = sum(1 for item in record["items"] for arm in (item["incumbent"], item["candidate"]) if arm)
+    assert fake_adapter.call_count == arms_recorded
     # partial run.json present
     on_disk = json.loads((tmp_path / "state" / "runs" / "r2" / "run.json").read_text())
     assert on_disk["stopped_early"] is True

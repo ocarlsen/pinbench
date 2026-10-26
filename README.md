@@ -50,8 +50,10 @@ The example suite is 12 short items; at current prices the whole run costs under
 
 ## Sample report
 
-This is `report.md` from a real run of `examples/suites/capitals.yaml`, incumbent
-`claude-sonnet-4-5` against candidate `gpt-4o-mini`, pasted verbatim.
+This is `report.md` for `examples/suites/capitals.yaml`, incumbent `claude-sonnet-4-5`
+against candidate `gpt-4o-mini`. It was produced offline by the same fake provider the
+tests use, with two candidate answers scripted wrong (Sydney for Australia, Istanbul for
+Turkey) to show what a HOLD looks like; it is not the output of a live API run yet.
 
 ```
 # pinbench report: capitals-demo
@@ -75,15 +77,15 @@ This is `report.md` from a real run of `examples/suites/capitals.yaml`, incumben
 
 a candidate is recommended when it is non-inferior on labels (within 0.0 points),
 non-losing on blind votes (ties excluded), and costs no more than 125% of the incumbent
-per item, over at least 10 completed items with no errors. 10 items can show a large
-regression, not a small one (1/n = 10.0 points); the downside of a wrong RECOMMEND is
+per item, over at least 10 completed items with no errors. 12 items can show a large
+regression, not a small one (1/n = 8.3 points); the downside of a wrong RECOMMEND is
 bounded by `pinbench bump` being one reverted commit.
 ```
 
-The candidate missed the two capitals most often confused with a bigger city in the same
-country (Canberra, Ankara), which is exactly the kind of thing a glance at a leaderboard
-would never show. The verdict is HOLD, not RECOMMEND: the labels check failed, so `bump`
-refuses this pair until a report says otherwise.
+Two scripted misses on 12 items are enough to fail the labels check, so the verdict is
+HOLD, not RECOMMEND, and `bump` refuses this pair until a report says otherwise. The cost
+check passes by a wide margin and does not rescue it: a cheaper model that is wrong more
+often is a regression.
 
 `vote.html` from the same run:
 
@@ -164,6 +166,11 @@ paragraph, vote-only).
   rather than guess.
 - The watch comparator is a heuristic over id strings (family and version tokens), not a
   vendor feed. It will miss a rename that does not follow the pattern.
+- Both arms get the same request: the suite's `task` as the system prompt, its
+  `max_output_tokens` as the ceiling, `temperature: 0`. Whatever was sent is recorded in
+  `run.json` under `request_params`. A new model's defaults can differ from the old one's
+  (reasoning effort, for instance), and a candidate that rejects a fixed temperature
+  records that rejection as an error, which is a HOLD, not a silent retry.
 - No confidence intervals, inter-rater agreement, or rotating reviewers; no hosted voting;
   no chat or email notifications, scheduler, or daemon (`watch` is a one-shot you cron); no
   automatic PR creation or rollback tooling; no thinking/reasoning-effort normalization
@@ -179,8 +186,11 @@ Runs entirely offline; `PINBENCH_NO_NETWORK=1` is set by `conftest.py`, and
 `test_no_network.py` proves the full CLI pipeline never opens a socket.
 
 To add a provider: create `pinbench/providers/<name>.py` with a `call(...)` and a
-`list_models(...)` function matching the shape in `providers/anthropic.py`, then add one
-prefix line to `provider_for_id` in `providers/__init__.py`.
+`list_models(...)` function matching the shape in `providers/anthropic.py`, then register
+it in `providers/__init__.py`: one entry each in `ADAPTERS` and `ENV_KEYS`, and one prefix
+line in `provider_for_id`. The adapters use plain `urllib` so the stubbing seam is obvious
+and the dependency list stays at one line; the official SDKs are a drop-in swap behind
+`providers/`.
 
 ## License
 

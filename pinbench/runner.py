@@ -67,7 +67,16 @@ def _check_api_keys(incumbent_id, candidate_id):
 
 
 def _default_params(suite):
-    return {"max_tokens": suite.max_output_tokens, "temperature": 0}
+    """Extra request params sent to both arms and recorded in run.json.
+
+    The output ceiling is passed to the adapter separately (each vendor names that key
+    differently); it is recorded here so run.json shows the full request shape.
+    """
+    return {"temperature": 0}
+
+
+def _recorded_params(suite, params):
+    return {"max_output_tokens": suite.max_output_tokens, **params}
 
 
 def _actual_cost(reply, price):
@@ -101,13 +110,13 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
 
         if not meter.check(cand_estimates[item.id]):
             stopped_early = True
-            result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=None, candidate_cost=None))
+            result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
             break
         cand_reply = _call_arm(candidate_id, suite, item, params, api_keys)
         cand_cost = meter.charge(_actual_cost(cand_reply, cand_price), cand_estimates[item.id])
         spent_candidate += cand_cost
 
-        result_items.append(_item_record(item, incumbent_id=inc_reply, incumbent_cost=inc_cost, candidate=cand_reply, candidate_cost=cand_cost))
+        result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
 
     return result_items, stopped_early, spent_incumbent, spent_candidate, params
 
@@ -179,35 +188,30 @@ def _build_record(run_name, suite, suite_path, incumbent_id, candidate_id, start
         "stopped_early": stopped_early,
         "items_completed": items_completed,
         "items_total": len(items),
-        "request_params": {"incumbent": params, "candidate": params},
+        "request_params": {"incumbent": _recorded_params(suite, params), "candidate": _recorded_params(suite, params)},
         "items": result_items,
     }
 
 
-def _item_record(item, incumbent_id, incumbent_cost, candidate, candidate_cost):
-    inc = incumbent_id
+def _arm_record(reply, cost_usd):
+    return {
+        "output": reply.output,
+        "input_tokens": reply.input_tokens,
+        "output_tokens": reply.output_tokens,
+        "cost_usd": cost_usd,
+        "latency_ms": reply.latency_ms,
+        "error": reply.error,
+    }
+
+
+def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost):
+    """`incumbent`/`candidate` are providers.Reply objects; candidate is None when the meter stopped first."""
     return {
         "id": item.id,
         "input": item.input,
         "expect": item.expect,
-        "incumbent": {
-            "output": inc.output,
-            "input_tokens": inc.input_tokens,
-            "output_tokens": inc.output_tokens,
-            "cost_usd": incumbent_cost,
-            "latency_ms": inc.latency_ms,
-            "error": inc.error,
-        },
-        "candidate": None
-        if candidate is None
-        else {
-            "output": candidate.output,
-            "input_tokens": candidate.input_tokens,
-            "output_tokens": candidate.output_tokens,
-            "cost_usd": candidate_cost,
-            "latency_ms": candidate.latency_ms,
-            "error": candidate.error,
-        },
+        "incumbent": _arm_record(incumbent, incumbent_cost),
+        "candidate": None if candidate is None else _arm_record(candidate, candidate_cost),
     }
 
 

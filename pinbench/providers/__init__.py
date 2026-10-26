@@ -12,6 +12,13 @@ from typing import Optional
 from . import anthropic as _anthropic
 from . import openai as _openai
 
+# To add a provider: one module in this package, one entry here, one entry in ENV_KEYS,
+# and one prefix line in provider_for_id.
+ADAPTERS = {
+    "anthropic": _anthropic,
+    "openai": _openai,
+}
+
 ENV_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -39,10 +46,12 @@ def provider_for_id(model_id: str) -> str:
     raise NoAdapterError(f"no adapter for id '{model_id}'")
 
 
+def adapter_for(provider: str):
+    try:
+        return ADAPTERS[provider]
+    except KeyError:
+        raise NoAdapterError(f"no adapter for provider '{provider}'") from None
+
+
 def route(model_id: str):
-    provider = provider_for_id(model_id)
-    if provider == "anthropic":
-        return _anthropic
-    if provider == "openai":
-        return _openai
-    raise NoAdapterError(f"no adapter for id '{model_id}'")
+    return adapter_for(provider_for_id(model_id))

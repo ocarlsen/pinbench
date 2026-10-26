@@ -1,4 +1,11 @@
-.pinbench/
+# Runtime state is ignored except each run's report.md, which `bump` commits.
+# git cannot re-include a file under an excluded directory, so each level is
+# opened explicitly.
+.pinbench/*
+!.pinbench/runs/
+.pinbench/runs/*
+!.pinbench/runs/*/
+.pinbench/runs/*/*
 !.pinbench/runs/*/report.md
 __pycache__/
 *.pyc

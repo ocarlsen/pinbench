@@ -14,13 +14,7 @@ from typing import Optional
 
 import yaml
 
-_ID_PREFIX_TO_PROVIDER = {
-    "claude-": "anthropic",
-    "gpt-": "openai",
-    "o1": "openai",
-    "o3": "openai",
-    "o4": "openai",
-}
+from . import providers
 
 
 class RegistryError(ValueError):
@@ -50,13 +44,6 @@ class Registry:
         return self.slots[name]
 
 
-def _provider_for_id(model_id: str) -> Optional[str]:
-    for prefix, provider in _ID_PREFIX_TO_PROVIDER.items():
-        if model_id.startswith(prefix):
-            return provider
-    return None
-
-
 def _validate_slot(name: str, raw: dict) -> Slot:
     if "model" not in raw or not raw["model"]:
         raise RegistryError(f"slot {name}: missing model")
@@ -64,11 +51,12 @@ def _validate_slot(name: str, raw: dict) -> Slot:
         raise RegistryError(f"slot {name}: missing provider")
     model = raw["model"]
     provider = raw["provider"]
-    if provider not in ("anthropic", "openai"):
+    if provider not in providers.ADAPTERS:
         raise RegistryError(f"slot {name}: no adapter for provider '{provider}'")
-    expected = _provider_for_id(model)
-    if expected is None:
-        raise RegistryError(f"slot {name}: no adapter for id '{model}'")
+    try:
+        expected = providers.provider_for_id(model)
+    except providers.NoAdapterError as exc:
+        raise RegistryError(f"slot {name}: {exc}") from exc
     if expected != provider:
         raise RegistryError(
             f"slot {name}: id '{model}' looks like {expected}, but provider is '{provider}'"

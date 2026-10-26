@@ -6,8 +6,8 @@ def test_family_and_version_basic():
 
 
 def test_family_and_version_strips_date_suffix_dashed():
-    a = watch.family_and_version("claude-sonnet-4-5-20241022")
-    b = watch.family_and_version("claude-sonnet-4-5")
+    a = watch.family_and_version("gpt-4o-mini-2024-07-18")
+    b = watch.family_and_version("gpt-4o-mini")
     assert a == b
 
 
@@ -111,3 +111,7 @@ def test_unreachable_provider_reported_and_exit_1(tmp_path, fake_adapter, monkey
     lines, code = watch.run_watch(pins_path, tmp_path / "state")
     assert code == 1
     assert any("openai UNREACHABLE" in l for l in lines)
+    # the unreachable provider's snapshot is not advanced; the reachable one's is
+    snapshot = watch.load_snapshot(tmp_path / "state")
+    assert "openai" not in snapshot
+    assert snapshot["anthropic"] == ["claude-sonnet-4-5"]

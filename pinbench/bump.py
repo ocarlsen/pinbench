@@ -37,7 +37,7 @@ def _read_verdict(report_path: Path) -> Optional[str]:
     return None
 
 
-def _check_gate(pins_path, state_dir, slot_name, to_id, run_name) -> str:
+def _check_gate(pins_path, state_dir, slot_name, to_id, run_name) -> None:
     reg = registry_mod.load(pins_path)
     slot = reg.slot(slot_name)
     report_path = Path(state_dir) / "runs" / run_name / "report.md"
@@ -55,25 +55,18 @@ def _check_gate(pins_path, state_dir, slot_name, to_id, run_name) -> str:
     verdict = _read_verdict(report_path)
     if verdict != "RECOMMEND":
         raise BumpRefused(f"run {run_name} report verdict is {verdict!r}, not RECOMMEND")
-    return slot.model
 
 
 def bump(pins_path, slot_name, to_id, run_name, state_dir=".pinbench", no_git=False, force_reason=None, repo_dir=None) -> BumpResult:
-    reg = registry_mod.load(pins_path)
-    slot = reg.slot(slot_name)
-    old_id = slot.model
-
+    old_id = registry_mod.load(pins_path).slot(slot_name).model
     if force_reason:
-        pass  # bypasses the verdict gate entirely
-    else:
-        old_id = _check_gate(pins_path, state_dir, slot_name, to_id, run_name)
-
-    registry_mod.set_model(pins_path, slot_name, to_id)
-
-    if force_reason:
+        # The recorded escape hatch: the verdict gate is skipped and the reason goes in the commit.
         message = f"bump {slot_name}: {old_id} -> {to_id} (forced: {force_reason}, run {run_name})"
     else:
+        _check_gate(pins_path, state_dir, slot_name, to_id, run_name)
         message = f"bump {slot_name}: {old_id} -> {to_id} (pinbench RECOMMEND, run {run_name})"
+
+    registry_mod.set_model(pins_path, slot_name, to_id)
 
     if no_git:
         return BumpResult(branch=None, committed=False, message=message)

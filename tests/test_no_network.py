@@ -58,6 +58,7 @@ scoring:
   votes: none
 policy:
   min_items: 2
+  require_votes_when_unlabeled: false   # this smoke test exercises bump, which needs a RECOMMEND
 items:
   - id: q01
     input: "Q1?"

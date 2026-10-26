@@ -5,10 +5,18 @@ NORM = ["strip", "casefold", "strip_punct"]
 
 
 class FakeSuite:
-    def __init__(self, labels="none", votes="optional", min_items=10, label_tol=0.0, cost_tol=0.25, normalize=None):
+    """Defaults to an unlabeled suite that does NOT require votes, so single checks can be isolated."""
+
+    def __init__(
+        self, labels="none", votes="optional", min_items=10, label_tol=0.0, cost_tol=0.25, normalize=None,
+        require_votes_when_unlabeled=False,
+    ):
         self.scoring = suite_mod.Scoring(labels=labels, normalize=normalize or NORM, votes=votes)
         self.policy = suite_mod.Policy(
-            min_items=min_items, label_tolerance_points=label_tol, cost_tolerance=cost_tol, require_votes_when_unlabeled=True
+            min_items=min_items,
+            label_tolerance_points=label_tol,
+            cost_tolerance=cost_tol,
+            require_votes_when_unlabeled=require_votes_when_unlabeled,
         )
 
 
@@ -67,6 +75,25 @@ def test_check2_incomplete_votes_required_missing():
     result = verdict.decide(run, s, votes=None, mapping=None)
     assert result.verdict == "INCOMPLETE"
     assert result.checks[-1].name == "votes_present"
+
+
+def test_check2_unlabeled_suite_needs_votes_by_default_policy():
+    # labels: none + votes: optional + no votes.json would otherwise RECOMMEND on cost alone.
+    run = _run(12)
+    s = FakeSuite(labels="none", votes="optional", min_items=10, require_votes_when_unlabeled=True)
+    result = verdict.decide(run, s, votes=None, mapping=None)
+    assert result.verdict == "INCOMPLETE"
+    assert result.checks[-1].name == "votes_present"
+    assert "require_votes_when_unlabeled" in result.checks[-1].detail
+
+
+def test_check2_unlabeled_suite_with_votes_proceeds():
+    run = _run(12)
+    s = FakeSuite(labels="none", votes="optional", min_items=10, require_votes_when_unlabeled=True)
+    votes = {f"q{i}": {"vote": "tie", "note": ""} for i in range(12)}
+    mapping = {f"q{i}": {"A": "candidate", "B": "incumbent"} for i in range(12)}
+    result = verdict.decide(run, s, votes=votes, mapping=mapping)
+    assert result.verdict == "RECOMMEND"
 
 
 def test_check3_hold_on_candidate_errors():
@@ -172,3 +199,12 @@ def test_rule_text_reflects_policy_numbers():
     assert "1.5 points" in result.rule_text
     assert "150%" in result.rule_text
     assert "20 completed items" in result.rule_text
+
+
+def test_rule_text_resolution_uses_this_runs_n_not_min_items():
+    s = FakeSuite(min_items=10)
+    run = _run(13, inc_cost=0.01, cand_cost=0.01)
+    result = verdict.decide(run, s)
+    assert "at least 10 completed items" in result.rule_text
+    assert "13 items can show a large regression" in result.rule_text
+    assert "1/n = 7.7 points" in result.rule_text
