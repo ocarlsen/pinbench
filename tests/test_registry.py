@@ -141,3 +141,32 @@ slots:
     assert "# One line per slot" in text
     assert "# exact vendor id; never an alias" in text
     assert "claude-sonnet-5" in text
+
+
+def test_set_model_cross_provider_updates_provider(tmp_path):
+    path = tmp_path / "pins.yaml"
+    path.write_text(PINS_OK.replace("    provider: anthropic\n", "    provider: anthropic   # validated\n"))
+
+    registry.set_model(path, "summarizer", "gpt-5-mini")
+
+    reg = registry.load(path)
+    assert reg.slots["summarizer"].model == "gpt-5-mini"
+    assert reg.slots["summarizer"].provider == "openai"
+    assert reg.slots["summarizer"].owner == "owen"
+    assert reg.slots["classifier"].provider == "openai"
+    assert "provider: openai   # validated" in path.read_text()
+
+
+def test_set_model_same_provider_leaves_provider_line(tmp_path):
+    path = tmp_path / "pins.yaml"
+    path.write_text(PINS_OK)
+    registry.set_model(path, "classifier", "gpt-5-mini")
+    assert path.read_text() == PINS_OK.replace("model: gpt-4o-mini", "model: gpt-5-mini")
+
+
+def test_set_model_unknown_id_prefix_refused(tmp_path):
+    path = tmp_path / "pins.yaml"
+    path.write_text(PINS_OK)
+    with pytest.raises(registry.RegistryError):
+        registry.set_model(path, "summarizer", "mystery-model-1")
+    assert path.read_text() == PINS_OK

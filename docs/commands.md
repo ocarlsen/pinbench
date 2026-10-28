@@ -36,7 +36,8 @@ every recorded hash still matches, and re-deriving the verdict from those inputs
 RECOMMEND. A hand-edited `report.md` or `verdict.json` is refused; rerun `pinbench report`.
 
 Without `--no-git`, `bump` creates branch `bump/SLOT-ID` in the pins file's repository before it
-touches the pins file, so an existing branch is a refusal with nothing edited. It then commits
+touches the pins file, so an existing branch is a refusal with nothing edited. When `--to` is
+another provider's id, the slot's `provider:` line is switched with it. It then commits
 the pins file and the run's `report.md` there, and prints "next step: open a PR from this
 branch". If the edit or commit fails, the pins file and the original branch are restored and the
 new branch is deleted.

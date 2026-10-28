@@ -235,3 +235,14 @@ def test_pin_reads_the_registry(tmp_path):
     assert pinbench.pin("classifier", pins_path) == "gpt-4o-mini"
     with pytest.raises(registry.RegistryError):
         pinbench.pin("nope", pins_path)
+
+
+def test_bump_cross_provider_switches_provider(tmp_path):
+    repo, pins_path = _init_repo(tmp_path)
+    _write_run_and_report(repo, "r1", "gpt-4o-mini", "claude-haiku-4-5", "RECOMMEND")
+
+    result = bump.bump(pins_path, "classifier", "claude-haiku-4-5", "r1", state_dir=repo / ".pinbench", repo_dir=repo)
+
+    assert result.committed is True
+    slot = registry.load(pins_path).slots["classifier"]
+    assert (slot.model, slot.provider) == ("claude-haiku-4-5", "anthropic")
