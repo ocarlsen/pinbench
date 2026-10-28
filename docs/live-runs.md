@@ -31,7 +31,8 @@ INCOMPLETE, and why a report states what it checked.
 
 ## A HOLD, for contrast
 
-`examples/suites/capitals.yaml` has labeled answers instead of votes. In an offline demo with two
-candidate answers scripted wrong (Sydney for Australia, Istanbul for Turkey), the labels check
-fails at 83.3% against 100%, and the verdict is HOLD even though the candidate is twenty times
-cheaper. A cheaper model that is wrong more often is a regression, and `bump` refuses the pair.
+`examples/suites/capitals.yaml` has labeled answers instead of votes. This run was not a live API
+call: it was produced offline by the same fake provider the tests use, with `claude-sonnet-4-5` as
+incumbent and `gpt-4o-mini` as candidate, and two candidate answers scripted wrong (Sydney for
+Australia, Istanbul for Turkey). The labels check fails at 83.3% against 100%, and the verdict is
+HOLD even though the candidate is twenty times cheaper. A cheaper model that is wrong more often is a regression, and `bump` refuses the pair.
