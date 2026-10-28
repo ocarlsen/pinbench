@@ -30,8 +30,9 @@ How the judge is run:
 
 - **One fixed judge.** A floating judge would hide a regression in the judge inside what looks
   like a regression in the candidate. `judge.model` is one pinned id. `run.json` and the report
-  header record it with a hash of the rubric (`judge_prompt_hash`); `judge.assert_comparable`
-  refuses to treat two reports as the same measurement when either differs.
+  header record it with a hash of the rubric (`judge_prompt_hash`), so two reports are the same
+  measurement only when both match. The library check `judge.assert_comparable` encodes that
+  rule; no command compares two runs yet, so for now you compare the two header lines by eye.
 - **Blind.** Each call sees the rubric, the rubric point ids and descriptions, the item input,
   and exactly one response, presented identically whichever arm produced it. It never sees the
   other arm's output, a model id, or the words "incumbent" or "candidate". Which arm is graded
