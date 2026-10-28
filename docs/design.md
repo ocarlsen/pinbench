@@ -18,5 +18,6 @@ Why pinbench works the way it does, one decision per line. Part of [pinbench](..
 - **A watch that calls no model.** Checking for something newer should never cost money or
   risk a call to an untested id. `watch` only lists models and diffs id strings.
 - **The judge is one fixed model, named out loud.** `run.json` and the report header record
-  its id and a hash of its rubric; comparing runs across that boundary is a refusal
-  (`judge.assert_comparable`), not a silent diff.
+  its id and a hash of its rubric, so runs scored by different judges or rubrics are visibly
+  different measurements. `judge.assert_comparable` is the library check for that; no command
+  calls it yet.
