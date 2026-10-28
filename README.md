@@ -50,6 +50,14 @@ The summaries suite is 10 short passages; the live run below cost about two cent
 across providers, also export `OPENAI_API_KEY` and pass an OpenAI model id (some OpenAI models
 require a verified organization).
 
+Your app reads its model id from the pins file, so merging a bump PR is what switches it:
+
+```python
+import pinbench
+
+model = pinbench.pin("summarizer")  # reads ./pins.yaml; pass a path as the second argument
+```
+
 A third example suite, `examples/suites/review.yaml`, skips the vote page and scores with a
 fixed judge model; see [Judge scoring](docs/judge-scoring.md).
 

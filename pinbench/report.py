@@ -11,11 +11,13 @@ a drop in judge calls that were graded.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Optional
 
 from . import scoring as scoring_mod
+from . import suite as suite_mod
 from . import verdict as verdict_mod
 
 
@@ -29,6 +31,50 @@ def load_mapping(path) -> dict:
 
 def build_verdict(run: dict, suite, votes: Optional[dict], mapping: Optional[dict]) -> verdict_mod.Verdict:
     return verdict_mod.decide(run, suite, votes=votes, mapping=mapping)
+
+
+def load_suite_for_run(run: dict):
+    """Reload the suite with the SAME judge/policy fallbacks the run itself used (recorded in
+    run.json), so a verdict built later reproduces the run exactly even if pinbench.yaml has
+    since changed or moved. A run.json from before this feature has no "effective_config"
+    (both defaults land on None), which is the suite module's own built-in-only behavior.
+    """
+    effective = run.get("effective_config") or {}
+    judge_defaults = (effective.get("judge_defaults") or {}).get("value")
+    policy_defaults = (effective.get("policy_defaults") or {}).get("value")
+    return suite_mod.load(run["suite"], judge_defaults=judge_defaults, policy_defaults=policy_defaults)
+
+
+def sha256_file(path) -> Optional[str]:
+    path = Path(path)
+    if not path.is_file():
+        return None
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_verdict_record(run_dir, run: dict, result: verdict_mod.Verdict, votes_path=None) -> Path:
+    """Write verdict.json beside report.md: the verdict plus a hash of every input it came from.
+
+    `pinbench bump` reads this, not report.md, and re-derives the verdict from the same
+    inputs, so editing report.md (or this file's verdict field) cannot open the gate.
+    """
+    run_dir = Path(run_dir)
+    record = {
+        "verdict": result.verdict,
+        "incumbent": run["incumbent"],
+        "candidate": run["candidate"],
+        "votes_path": str(Path(votes_path).resolve()) if votes_path else None,
+        "sha256": {
+            "run.json": sha256_file(run_dir / "run.json"),
+            "suite": sha256_file(run["suite"]),
+            "votes": sha256_file(votes_path) if votes_path else None,
+            "mapping.json": sha256_file(run_dir / "mapping.json") if votes_path else None,
+            "report.md": sha256_file(run_dir / "report.md"),
+        },
+    }
+    target = run_dir / "verdict.json"
+    target.write_text(json.dumps(record, indent=2) + "\n")
+    return target
 
 
 def _config_line(run: dict) -> Optional[str]:

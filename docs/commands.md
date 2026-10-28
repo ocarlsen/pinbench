@@ -27,9 +27,19 @@ Other flags:
 | `--no-git` | `bump` | edit the pins file and stop: no branch, no commit |
 | `--force REASON` | `bump` | skip the RECOMMEND gate; the reason is written into the commit message as `(forced: REASON, run RUN_NAME)` |
 
-Without `--no-git`, `bump` creates branch `bump/SLOT-ID` in the pins file's repository, commits
+`report` also writes `verdict.json` beside `report.md`: the verdict plus a SHA-256 of every
+input it came from (`run.json`, the suite file, and the votes file and `mapping.json` when votes
+were given).
+
+`bump` never reads the verdict from `report.md`'s text. It refuses unless `verdict.json` exists,
+every recorded hash still matches, and re-deriving the verdict from those inputs gives the same
+RECOMMEND. A hand-edited `report.md` or `verdict.json` is refused; rerun `pinbench report`.
+
+Without `--no-git`, `bump` creates branch `bump/SLOT-ID` in the pins file's repository before it
+touches the pins file, so an existing branch is a refusal with nothing edited. It then commits
 the pins file and the run's `report.md` there, and prints "next step: open a PR from this
-branch".
+branch". If the edit or commit fails, the pins file and the original branch are restored and the
+new branch is deleted.
 
 Exit codes:
 
