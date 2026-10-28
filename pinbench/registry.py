@@ -93,22 +93,32 @@ def load(path) -> Registry:
 
 
 def set_model(path, slot_name: str, new_id: str) -> None:
-    """Edit the `model:` line inside `slot_name`'s block, preserving everything else.
+    """Edit the `model:` line inside `slot_name`'s block, preserving everything else. When
+    `new_id` belongs to a different provider than the slot's, the `provider:` line is edited
+    too, so a cross-provider bump stays a valid registry.
 
-    Refuses to do: touch any line outside that one slot's `model:` key, verified by
-    re-parsing the file afterward and asserting the only YAML-level difference is that key.
+    Refuses to do: touch any line outside that one slot's `model:` and `provider:` keys,
+    verified by re-parsing the file afterward and asserting the only YAML-level differences
+    are those keys.
     """
     path = Path(path)
     before = load(path)
     if slot_name not in before.slots:
         raise RegistryError(f"no such slot: {slot_name}")
+    try:
+        new_provider = providers.provider_for_id(new_id)
+    except providers.NoAdapterError as exc:
+        raise RegistryError(f"slot {slot_name}: {exc}") from exc
+    old_provider = before.slots[slot_name].provider
 
     lines = path.read_text().splitlines(keepends=True)
     slot_header = re.compile(rf"^  {re.escape(slot_name)}:\s*$")
     model_line = re.compile(r"^(\s+model:\s*)(\S+)(.*)$")
+    provider_line = re.compile(r"^(\s+provider:\s*)(\S+)(.*)$")
 
     in_slot = False
     edited = False
+    provider_edited = new_provider == old_provider
     out = []
     for line in lines:
         if slot_header.match(line.rstrip("\n")):
@@ -124,10 +134,18 @@ def set_model(path, slot_name: str, new_id: str) -> None:
                 out.append(f"{m.group(1)}{new_id}{m.group(3)}\n")
                 edited = True
                 continue
+        if in_slot and not provider_edited:
+            m = provider_line.match(line)
+            if m:
+                out.append(f"{m.group(1)}{new_provider}{m.group(3)}\n")
+                provider_edited = True
+                continue
         out.append(line)
 
     if not edited:
         raise RegistryError(f"could not find model: line for slot {slot_name}")
+    if not provider_edited:
+        raise RegistryError(f"could not find provider: line for slot {slot_name}")
 
     path.write_text("".join(out))
 
@@ -138,14 +156,15 @@ def set_model(path, slot_name: str, new_id: str) -> None:
             if slot.model != new_id:
                 raise RegistryError("set_model: edit did not take effect")
             # every other field on this slot must be unchanged
+            if slot.provider != new_provider:
+                raise RegistryError("set_model: provider edit did not take effect")
             if (
-                slot.provider != before_slot.provider
-                or slot.owner != before_slot.owner
+                slot.owner != before_slot.owner
                 or slot.hold_back != before_slot.hold_back
                 or slot.hold_back_reason != before_slot.hold_back_reason
                 or slot.sunset != before_slot.sunset
             ):
-                raise RegistryError("set_model: touched more than the model key")
+                raise RegistryError("set_model: touched more than the model and provider keys")
         else:
             if slot != before_slot:
                 raise RegistryError(f"set_model: slot {name} changed unexpectedly")

@@ -25,7 +25,6 @@ from . import registry as registry_mod
 from . import report as report_mod
 from . import runner as runner_mod
 from . import scoring as scoring_mod
-from . import suite as suite_mod
 from . import watch as watch_mod
 
 DEFAULT_PINS = config_mod.BUILTIN_DEFAULTS["paths"]["pins"]
@@ -225,14 +224,7 @@ def cmd_report(args):
         return 1
     args.state = cli_config.resolved_paths(args, config)["runs"][0]
     run = runner_mod.load_run(args.state, args.run_name)
-    # Reload the suite with the SAME judge/policy fallbacks the run itself used (recorded in
-    # run.json), so a report built later reproduces the run exactly even if pinbench.yaml has
-    # since changed or moved. A run.json from before this feature has no "effective_config"
-    # (both defaults land on None), which is this module's own built-in-only behavior.
-    effective = run.get("effective_config") or {}
-    judge_defaults = (effective.get("judge_defaults") or {}).get("value")
-    policy_defaults = (effective.get("policy_defaults") or {}).get("value")
-    suite = suite_mod.load(run["suite"], judge_defaults=judge_defaults, policy_defaults=policy_defaults)
+    suite = report_mod.load_suite_for_run(run)
 
     votes = None
     mapping = None
@@ -257,8 +249,9 @@ def cmd_report(args):
     text = report_mod.render(run, suite, result, fmt=args.format)
     print(text, end="")
 
-    report_path = _run_dir(args.state, args.run_name) / "report.md"
-    report_path.write_text(report_mod.render(run, suite, result, fmt="md"))
+    run_dir = _run_dir(args.state, args.run_name)
+    (run_dir / "report.md").write_text(report_mod.render(run, suite, result, fmt="md"))
+    report_mod.write_verdict_record(run_dir, run, result, votes_path=args.votes)
     return 0
 
 
