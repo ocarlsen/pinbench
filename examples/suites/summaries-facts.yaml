@@ -1,6 +1,6 @@
 # The summaries suite's ten passages and task, scored by a fixed judge instead of blind votes.
-# Each item lists three key facts a faithful 2-3 sentence summary should carry (recall); the
-# judge also counts claims the passage does not support (extra). Use it when outputs are close
+# Each item lists three key facts, each at its core, that a faithful 2-3 sentence summary should
+# carry (recall); the judge also counts claims the passage does not support (extra). Use it when outputs are close
 # enough that an A/B vote is mostly taste.
 #
 # Policy choices, stated so a reader can disagree with them:
@@ -11,6 +11,9 @@
 #   two is a HOLD. Here an "extra" is an invented detail, not a bonus finding.
 # - judge gpt-6.1-sol: from neither arm's vendor when comparing Claude and Gemini. It reasons by
 #   default and reasoning counts against max_output_tokens, hence the 3000 ceiling.
+# Calibrated 2026-10-29: the first probe's points carried finer detail (which fields bulk edit
+# changes, which keys navigate), and the judge failed accurate summaries that left it out, as a
+# short summary should. Points now state the core fact only.
 version: 1
 name: summaries-facts
 task: Summarize in 2-3 sentences.
@@ -28,11 +31,11 @@ judge:
   model: gpt-6.1-sol
   max_output_tokens: 3000
   rubric: 'You are checking a short summary of a passage. Judge it only against the given rubric points;
-    each names one key fact a faithful summary should carry. A point is satisfied when the summary states
-    that fact, in any words. A vague mention without the specific fact does not count, and a point the
-    summary gets wrong is not satisfied. Count as an extra finding each claim in the summary that the
-    passage does not support: an invented, wrong or distorted detail. Accurate details beyond the rubric
-    points are not extra findings.'
+    each names one key fact a faithful summary should carry, stated at its core. A point is satisfied
+    when the summary states that core fact, in any words; it does not also need the passage''s finer details,
+    since a 2-3 sentence summary must leave some out. A point the summary gets wrong, or only hints at,
+    is not satisfied. Count as an extra finding each claim in the summary that the passage does not support:
+    an invented, wrong or distorted detail. Accurate details beyond the rubric points are not extra findings.'
 items:
 - id: s01
   input: The Maple Hollow town council met on Tuesday evening to discuss the proposed resurfacing of Elm
@@ -46,11 +49,11 @@ items:
     weather permitting, and signage will go up along the detour route by Friday.
   rubric_points:
   - id: approved
-    description: The council voted four to one to approve funding for the Elm Street resurfacing
+    description: The council approved funding for the Elm Street resurfacing
   - id: cost
-    description: The job costs roughly forty thousand dollars
+    description: The job costs about forty thousand dollars
   - id: start
-    description: Work starts the first week of next month (weather permitting)
+    description: Work is scheduled to start the first week of next month
 - id: s02
   input: 'Version 3.4 of the Fernglow task tracker ships this week with a handful of changes users have
     been asking for since the last major release. The biggest addition is a bulk-edit mode that lets a
@@ -63,11 +66,11 @@ items:
     archived boards would briefly reappear in the sidebar after a page refresh.'
   rubric_points:
   - id: bulk-edit
-    description: A new bulk-edit mode changes due date, label or assignee on several cards at once
+    description: A bulk-edit mode lets users change several cards at once
   - id: keyboard
-    description: Keyboard navigation was reworked (arrow keys move between cards, enter opens one)
+    description: Keyboard navigation was improved
   - id: digest
-    description: The weekly digest email now puts overdue items at the top
+    description: The weekly digest email now puts overdue items first
 - id: s03
   input: To make a simple weeknight lentil soup, start by rinsing one cup of dried green or brown lentils
     and setting them aside while you chop one onion, two carrots, and two stalks of celery into small,
@@ -80,11 +83,11 @@ items:
     Season with salt, pepper, and a squeeze of lemon juice just before serving.
   rubric_points:
   - id: vegetables
-    description: Onion, carrots and celery are cooked in olive oil until soft
+    description: The soup starts by cooking chopped vegetables
   - id: simmer
-    description: Lentils simmer in vegetable broth with diced tomatoes
+    description: The lentils simmer in broth
   - id: time
-    description: The soup simmers about thirty minutes, until the lentils are tender
+    description: It simmers about thirty minutes, until the lentils are tender
 - id: s04
   input: The Riverbend Otters pulled off a come-from-behind win on Saturday afternoon, trailing by eleven
     points at halftime before outscoring the visiting Hartley Falcons twenty-six to nine in the second
@@ -97,11 +100,11 @@ items:
     Crestwood Hawks next weekend in a game that could decide seeding heading into the playoffs.
   rubric_points:
   - id: comeback
-    description: The Otters beat the Hartley Falcons after trailing by eleven at halftime
+    description: The Otters came back from a halftime deficit to beat the Falcons
   - id: castellano
-    description: Mia Castellano led all scorers with twenty-two points
+    description: Mia Castellano led the scoring with twenty-two points
   - id: next
-    description: The Otters are now 7-3 and host the division-leading Crestwood Hawks next weekend
+    description: The Otters next host the division-leading Crestwood Hawks
 - id: s05
   input: A slow-moving system is expected to bring several days of unsettled weather to the valley starting
     Thursday, with forecasters calling for a mix of light rain in the morning hours giving way to scattered
@@ -114,11 +117,11 @@ items:
     round of showers before clearer skies return.
   rubric_points:
   - id: rain
-    description: Rain and showers arrive starting Thursday
+    description: Rain or showers start Thursday
   - id: cooler
-    description: Temperatures drop, with highs in the upper fifties
+    description: Temperatures turn cooler
   - id: second-system
-    description: A second, weaker disturbance may bring more showers into next week
+    description: A second disturbance may bring more showers into next week
 - id: s06
   input: The Thistledown branch library will roll out a redesigned children's section starting next month,
     replacing the cramped shelving along the back wall with lower, rounded units that staff say will be
@@ -131,10 +134,9 @@ items:
     expects the new section to be ready in time for the start of the school year.
   rubric_points:
   - id: redesign
-    description: The children's section is redesigned with lower, rounded shelving and a reading nook
+    description: The children's section is being redesigned
   - id: relocation
-    description: During the work the collection moves to tables near the entrance and story time to the
-      community room
+    description: The children's collection or story time moves temporarily during the work
   - id: timing
     description: The new section should be ready by the start of the school year
 - id: s07
@@ -150,10 +152,9 @@ items:
     traditionally been held.
   rubric_points:
   - id: turnout
-    description: Nearly ninety people took part, a swap that has grown over six years
+    description: About ninety people took part
   - id: extras
-    description: Attendees logged plants at a sign-in table, or members gave short talks on composting
-      and pest control (either one counts)
+    description: Attendees logged plants at a sign-in table, or members gave short talks (either one counts)
   - id: venue
     description: Organizers are looking for a larger venue next year
 - id: s08
@@ -168,11 +169,11 @@ items:
     who want a reminder once the detour ends and the route reverts to its usual path.
   rubric_points:
   - id: detour
-    description: From Monday the number 14 bus detours through Lindel Heights for storm-damage road repairs
+    description: The number 14 bus is detoured while a road is repaired
   - id: stop
-    description: Riders board at a temporary stop on Crescent Drive because the Maple Court stop is closed
+    description: Riders must use a temporary stop on Crescent Drive
   - id: delay
-    description: The detour adds about six minutes at peak, and one extra morning bus was added
+    description: The detour adds about six minutes
 - id: s09
   input: The Brookhaven Elementary fall fundraiser wrapped up Friday with organizers announcing it raised
     just over eighteen thousand dollars, comfortably clearing the goal set at the start of the school
@@ -185,11 +186,11 @@ items:
     Installation of the new equipment is expected to begin once the ground thaws in spring.
   rubric_points:
   - id: raised
-    description: The fundraiser raised just over eighteen thousand dollars, beating its goal
+    description: The fundraiser raised about eighteen thousand dollars, beating its goal
   - id: format
-    description: It combined a craft fair with a two-week online raffle instead of a single bake sale
+    description: This year added a craft fair and an online raffle
   - id: playground
-    description: Proceeds will replace the aging playground equipment
+    description: Proceeds will replace the playground equipment
 - id: s10
   input: This month's meeting of the Willow Creek book club tackled a sprawling historical novel that
     split opinion more sharply than anything the group has read in the past year. Several members praised
@@ -203,8 +204,8 @@ items:
     sagas.
   rubric_points:
   - id: split
-    description: 'The novel divided the club: the pacing was praised, the ending felt rushed'
+    description: The novel divided the club's opinion
   - id: narrator
-    description: Members debated whether the unreliable narrator was clever or frustrating
+    description: Members debated the unreliable narrator
   - id: next-pick
-    description: The group chose a lighter, shorter novel for next month
+    description: The group chose a lighter, shorter book for next month
