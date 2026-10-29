@@ -63,3 +63,8 @@ models:
     # key), so such a suite must repeat thinking_level or Argon runs at medium.
     request_defaults:
       generation_config: {thinking_level: low}
+  gpt-6.1-sol:
+    # Standard tier, read 2026-10-29. Used as the judge in examples/suites/summaries-facts.yaml.
+    input: 2.00
+    output: 10.00
+    source: "https://developers.openai.com/api/docs/pricing"

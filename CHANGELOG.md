@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+`examples/suites/summaries-facts.yaml`: the summaries suite's passages and task, scored by a
+fixed judge against three key facts per item, with unsupported claims counted as extras. For
+outputs too close for a useful A/B vote. Judge `gpt-6.1-sol` (price row added), from neither
+vendor of a Claude-vs-Gemini comparison. The suite header states its two policy choices:
+recall tolerance 5.0 points (one extra miss of 30), extra tolerance 0.1 per item.
+
 Google Gemini provider (`pinbench/providers/gemini.py`, `GEMINI_API_KEY`, ids starting
 `gemini-`), on the Interactions API (`POST /v1beta/interactions`, key in the
 `x-goog-api-key` header, `store: false`). Billed output is visible plus thought tokens
