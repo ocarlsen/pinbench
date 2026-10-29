@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+`scripts/judge_control.py` and `examples/controls/summaries-facts-controls.yaml`: a negative
+control for a judge suite. One deliberately bad summary per item (one fact kept, one wrong, one
+left out, one invented claim) goes through the suite's judge exactly as an arm's output would;
+each must score at most `max_hits` points and at least `min_extra` unsupported claims, and any
+lenient grade or judge error exits 1. Offline tests prove a lenient judge goes red.
+
 `examples/suites/summaries-facts.yaml`: the summaries suite's passages and task, scored by a
 fixed judge against three key facts per item, with unsupported claims counted as extras. For
 outputs too close for a useful A/B vote. Judge `gpt-6.1-sol` (price row added), from neither
