@@ -67,6 +67,8 @@ def test_first_run_seeds_and_says_so(tmp_path, fake_adapter):
     assert code == 0
     assert any("seeded 2 ids for anthropic" in l for l in lines)
     assert any("seeded 2 ids for openai" in l for l in lines)
+    # No slot pins a Gemini model and GEMINI_API_KEY is unset: that provider is not checked.
+    assert not any("gemini" in l for l in lines)
 
     snapshot = watch.load_snapshot(tmp_path / "state")
     assert snapshot["anthropic"] == ["claude-sonnet-4-5", "claude-opus-4-1"]

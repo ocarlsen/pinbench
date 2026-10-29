@@ -48,3 +48,16 @@ models:
     # the pricing/models pages above, so this is an observation, not a cited doc).
     request_defaults:
       thinking: {type: disabled}
+  gemini-4-argon:
+    # Introductory standard-tier rate, "through November 30, 2026"; the same page lists
+    # $4.00 input / $20.00 output "starting December 1, 2026". Update this row on Dec 1:
+    # pinbench prices from this file, never a live lookup. Output includes thinking tokens.
+    # Read 2026-10-29.
+    input: 2.00
+    output: 10.00
+    source: "https://ai.google.dev/gemini-api/docs/pricing"
+    # Thinking cannot be turned off on this model; levels are low, medium (default) and
+    # high (https://ai.google.dev/gemini-api/docs/latest-model, read 2026-10-29). "low" is
+    # the lowest setting, the nearest match to the thinking-off rows above.
+    request_defaults:
+      generation_config: {thinking_level: low}

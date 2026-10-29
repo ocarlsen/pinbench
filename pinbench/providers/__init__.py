@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import anthropic as _anthropic
+from . import gemini as _gemini
 from . import openai as _openai
 
 # To add a provider: one module in this package, one entry here, one entry in ENV_KEYS,
@@ -17,11 +18,13 @@ from . import openai as _openai
 ADAPTERS = {
     "anthropic": _anthropic,
     "openai": _openai,
+    "gemini": _gemini,
 }
 
 ENV_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
 }
 
 
@@ -36,7 +39,8 @@ class Reply:
     # outcome is unknown). cost.py uses this to tell "refused before generating, $0" apart
     # from "unknown outcome, charge the estimate".
     status_code: Optional[int] = None
-    # The vendor's own stop/finish reason (Anthropic `stop_reason`, OpenAI `finish_reason`),
+    # The vendor's own stop/finish reason (Anthropic `stop_reason`, OpenAI `finish_reason`,
+    # Gemini interaction `status`, lower-cased),
     # verbatim, when the call got far enough to produce one. None on a transport-level
     # failure (timeout, connection drop) or an HTTP error with no parsed body.
     # scoring.is_truncated() is the one place that interprets this value as "truncated".
@@ -52,6 +56,8 @@ def provider_for_id(model_id: str) -> str:
         return "anthropic"
     if model_id.startswith("gpt-") or (model_id[:1] == "o" and model_id[1:2].isdigit()):
         return "openai"
+    if model_id.startswith("gemini-"):
+        return "gemini"
     raise NoAdapterError(f"no adapter for id '{model_id}'")
 
 

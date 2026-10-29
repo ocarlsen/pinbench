@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+Google Gemini provider (`pinbench/providers/gemini.py`, `GEMINI_API_KEY`, ids starting
+`gemini-`), on the Interactions API (`POST /v1beta/interactions`, key in the
+`x-goog-api-key` header, `store: false`). Billed output is visible plus thought tokens
+(`usage.total_output_tokens + usage.total_thought_tokens`), since Google bills thinking at the
+output rate. The interaction `status` is recorded lower-cased as the stop reason, and
+`incomplete` joins `scoring.TRUNCATION_STOP_REASONS`; empty text is a failure, as on the other
+adapters. A `generation_config` mapping in `params` merges into the request's
+generation_config instead of replacing it, so a model's `thinking_level` default keeps the
+output ceiling. `examples/prices.yaml` gains `gemini-4-argon` at its introductory $2/$10 rate
+(through 2026-11-30; the row says what it becomes on Dec 1) with `thinking_level: low`, the
+lowest level, since Argon cannot turn thinking off.
+
+`watch` now checks only the providers `pins.yaml` uses. It used to iterate every adapter, so
+adding a provider made `watch` exit 1 ("UNREACHABLE: ... is not set") for anyone who pins
+nothing there.
+
 Judge stage skips a bad arm output instead of grading it: an arm's reply that errored, is
 empty, or was cut off by the output ceiling (`scoring.TRUNCATION_STOP_REASONS`) is never
 sent to the judge (`judge.skip_reason`, `judge.run_judge_stage`). A live run had been
