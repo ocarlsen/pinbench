@@ -3,17 +3,16 @@
 # carry (recall); the judge also counts claims the passage does not support (extra). Use it when outputs are close
 # enough that an A/B vote is mostly taste.
 #
-# Policy choices, stated so a reader can disagree with them:
-# - recall_tolerance_points 5.0: 30 points in all, so the candidate may miss one more point than
-#   the incumbent (3.3 points) and still pass; two more misses (6.7) is a HOLD. A 2-3 sentence
-#   summary has to drop something, and a 0.0 tolerance would turn one judgment call into a HOLD.
-# - extra_tolerance 0.1: one more unsupported claim than the incumbent across ten items passes;
-#   two is a HOLD. Here an "extra" is an invented detail, not a bonus finding.
+# Policy: pinbench's strict default for recall (0.0) and 0.0 for extras, frozen before the full
+# run. A HOLD here means re-run or hand-check the judge's notes, not reject. Extras are 0.0, not
+# the review suite's 0.5, because an extra here is an invented claim, not an off-rubric finding.
 # - judge gpt-6.1-sol: from neither arm's vendor when comparing Claude and Gemini. It reasons by
 #   default and reasoning counts against max_output_tokens, hence the 3000 ceiling.
 # Calibrated 2026-10-29: the first probe's points carried finer detail (which fields bulk edit
 # changes, which keys navigate), and the judge failed accurate summaries that left it out, as a
-# short summary should. Points now state the core fact only.
+# short summary should. Points now state the core fact only. The rewrite was uniform across all
+# 30 points and both arms; on the probe it helped the candidate more (s02: candidate 1/3,
+# incumbent 2/3 under the old points). No rubric, policy or judge change after this commit.
 version: 1
 name: summaries-facts
 task: Summarize in 2-3 sentences.
@@ -23,8 +22,8 @@ scoring:
   votes: none
 policy:
   min_items: 10
-  recall_tolerance_points: 5.0
-  extra_tolerance: 0.1
+  recall_tolerance_points: 0.0
+  extra_tolerance: 0.0
   cost_tolerance: 0.25
   require_votes_when_unlabeled: false
 judge:
