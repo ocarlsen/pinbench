@@ -1,4 +1,4 @@
-"""Diff each provider's model list against the last snapshot: newer pins, vanished pins, new ids.
+"""Diff the model list of each provider pins.yaml uses against the last snapshot: newer pins, vanished pins, new ids.
 
 Refuses to do: call a model, or advance a provider's snapshot when that provider was
 unreachable (an unreachable vendor is reported, never silently skipped).

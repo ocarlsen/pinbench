@@ -58,6 +58,8 @@ models:
     source: "https://ai.google.dev/gemini-api/docs/pricing"
     # Thinking cannot be turned off on this model; levels are low, medium (default) and
     # high (https://ai.google.dev/gemini-api/docs/latest-model, read 2026-10-29). "low" is
-    # the lowest setting, the nearest match to the thinking-off rows above.
+    # the lowest setting, the nearest match to the thinking-off rows above. A suite that sets
+    # its own `generation_config` replaces this whole mapping (suite params win per top-level
+    # key), so such a suite must repeat thinking_level or Argon runs at medium.
     request_defaults:
       generation_config: {thinking_level: low}

@@ -59,18 +59,15 @@ def _build_body(model_id, system, user_input, max_tokens, params):
 
 
 def _extract_text(interaction):
-    """Visible text from the model_output steps; `output_text` only when there are no steps."""
-    steps = interaction.get("steps")
-    if steps:
-        parts = []
-        for step in steps:
-            if step.get("type") != "model_output":
-                continue
-            for block in step.get("content") or []:
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-        return "".join(parts)
-    return interaction.get("output_text") or ""
+    """Visible text from the model_output steps, else `output_text`; thought steps never count."""
+    parts = []
+    for step in interaction.get("steps") or []:
+        if step.get("type") != "model_output":
+            continue
+        for block in step.get("content") or []:
+            if block.get("type") == "text":
+                parts.append(block.get("text", ""))
+    return "".join(parts) or interaction.get("output_text") or ""
 
 
 def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):

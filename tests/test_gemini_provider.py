@@ -176,3 +176,13 @@ def test_list_models_strips_prefix_and_paginates(monkeypatch):
     monkeypatch.setattr(gemini.urllib.request, "urlopen", fake_urlopen)
     assert gemini.list_models("k") == ["gemini-3.8-flash", "gemini-4-argon", "text-embedding-005"]
     assert "pageToken=p2" in urls[1]
+
+
+def test_output_text_fallback_when_no_model_output_step(capture):
+    capture["payload"] = {
+        "status": "completed",
+        "steps": [{"type": "thought", "content": [{"type": "text", "text": "hidden"}]}],
+        "output_text": "From output_text.",
+        "usage": {"total_input_tokens": 5, "total_output_tokens": 3, "total_thought_tokens": 0},
+    }
+    assert gemini.call("gemini-4-argon", "s", "x", 300, "k").output == "From output_text."

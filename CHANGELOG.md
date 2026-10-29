@@ -8,11 +8,16 @@ Google Gemini provider (`pinbench/providers/gemini.py`, `GEMINI_API_KEY`, ids st
 (`usage.total_output_tokens + usage.total_thought_tokens`), since Google bills thinking at the
 output rate. The interaction `status` is recorded lower-cased as the stop reason, and
 `incomplete` joins `scoring.TRUNCATION_STOP_REASONS`; empty text is a failure, as on the other
-adapters. A `generation_config` mapping in `params` merges into the request's
-generation_config instead of replacing it, so a model's `thinking_level` default keeps the
-output ceiling. `examples/prices.yaml` gains `gemini-4-argon` at its introductory $2/$10 rate
+adapters. Inside the adapter, a `generation_config` mapping in `params` merges into the
+request's generation_config, so `thinking_level` never drops the output ceiling. Between a
+model's `request_defaults` and a suite's `params` the merge stays per top-level key: a suite
+that sets its own `generation_config` replaces the model's, `thinking_level` included. `examples/prices.yaml` gains `gemini-4-argon` at its introductory $2/$10 rate
 (through 2026-11-30; the row says what it becomes on Dec 1) with `thinking_level: low`, the
 lowest level, since Argon cannot turn thinking off.
+
+`run` builds its per-provider key map from `providers.ENV_KEYS`. It had two providers
+hard-coded, so a Gemini arm would pass the plan, bill the incumbent's first call, then crash
+with `KeyError: 'gemini'`.
 
 `watch` now checks only the providers `pins.yaml` uses. It used to iterate every adapter, so
 adding a provider made `watch` exit 1 ("UNREACHABLE: ... is not set") for anyone who pins

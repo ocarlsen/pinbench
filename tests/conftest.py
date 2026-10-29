@@ -13,6 +13,7 @@ def no_network_env(monkeypatch):
     monkeypatch.setenv("PINBENCH_NO_NETWORK", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     yield
 
 
