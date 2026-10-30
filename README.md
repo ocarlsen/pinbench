@@ -47,8 +47,8 @@ pinbench report demo --votes ~/Downloads/votes.json
 ```
 
 The summaries suite is 10 short passages; the live run below cost about two cents. To compare
-across providers, also export `OPENAI_API_KEY` and pass an OpenAI model id (some OpenAI models
-require a verified organization).
+across providers, also export `OPENAI_API_KEY` or `GEMINI_API_KEY` and pass that provider's
+model id (some OpenAI models require a verified organization).
 
 Your app reads its model id from the pins file, so merging a bump PR is what switches it:
 

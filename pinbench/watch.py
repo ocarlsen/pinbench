@@ -1,4 +1,4 @@
-"""Diff each provider's model list against the last snapshot: newer pins, vanished pins, new ids.
+"""Diff the model list of each provider pins.yaml uses against the last snapshot: newer pins, vanished pins, new ids.
 
 Refuses to do: call a model, or advance a provider's snapshot when that provider was
 unreachable (an unreachable vendor is reported, never silently skipped).
@@ -73,7 +73,9 @@ def run_watch(pins_path, state_dir, seed: bool = False, env=None):
     snapshot = load_snapshot(state_dir)
     lines = []
     any_unreachable = False
-    for provider_name in sorted(providers.ADAPTERS):
+    # Only the providers pins.yaml actually uses: a provider you pin nothing on needs no key,
+    # and its absence is not an outage.
+    for provider_name in sorted({slot.provider for slot in reg.slots.values()}):
         adapter = providers.adapter_for(provider_name)
         api_key = env.get(providers.ENV_KEYS[provider_name])
         try:

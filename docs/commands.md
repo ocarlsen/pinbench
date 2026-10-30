@@ -9,7 +9,7 @@ Every `pinbench` subcommand, its flags, exit codes, and what each command refuse
 | `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
-| `pinbench watch [--seed]` | diff each provider's catalog against the last snapshot |
+| `pinbench watch [--seed]` | diff the catalog of each provider `pins.yaml` uses against the last snapshot |
 | `pinbench bump SLOT --to ID --run RUN_NAME` | edit a pin, gated on a RECOMMEND report |
 | `pinbench config [--suite SUITE]` | print the effective settings and where each one came from |
 
@@ -58,7 +58,7 @@ Refusals and warnings:
   had any. Some-but-not-all items completed is a warning at exit 0; a wholly-failed arm is
   exit 4.
 - `run` records each arm's stop/finish reason verbatim (`stop_reason` in `run.json`, from
-  Anthropic's `stop_reason` or OpenAI's `finish_reason`) and prints a per-arm truncated count
+  Anthropic's `stop_reason`, OpenAI's `finish_reason` or Gemini's interaction `status`) and prints a per-arm truncated count
   plus a loud warning when any output hit the ceiling. Not a refusal: whether a few truncated
   items sink the verdict is `report`'s call, gated by `policy.max_truncated`.
 - `vote` refuses (exit 1) when any item is missing output on either arm, naming the item/arm

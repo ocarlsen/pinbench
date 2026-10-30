@@ -207,10 +207,7 @@ def run(
     inc_estimates = {e.item_id: e.cost_usd for e in plan_result.estimate.incumbent.items}
     cand_estimates = {e.item_id: e.cost_usd for e in plan_result.estimate.candidate.items}
 
-    api_keys = {
-        "anthropic": os.environ.get("ANTHROPIC_API_KEY"),
-        "openai": os.environ.get("OPENAI_API_KEY"),
-    }
+    api_keys = {provider: os.environ.get(env_key) for provider, env_key in providers.ENV_KEYS.items()}
 
     judge_ctx = None
     if plan_result.judge_id is not None:

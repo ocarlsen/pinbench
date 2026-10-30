@@ -184,3 +184,47 @@ def test_live_run_shape_claude_sonnet_5_5_rejects_disabled_claude_haiku_accepts(
     for item in on_disk["items"]:
         assert item["incumbent"]["error"] is None
         assert item["candidate"]["error"] is None
+
+
+def test_gemini_arm_runs_and_gets_its_own_key(tmp_path, fake_adapter, monkeypatch):
+    """A third provider's arm must reach its adapter with ITS key. The runner once built its
+    key map from two hard-coded providers, so a gemini- arm passed the plan, billed the
+    incumbent's first call, then crashed with KeyError: 'gemini'."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    prices_path = tmp_path / "prices.yaml"
+    prices_path.write_text(
+        """\
+version: 1
+checked: 2026-10-29
+models:
+  claude-sonnet-5-5: {input: 2.0, output: 10.0, source: "https://x"}
+  gemini-4-argon:
+    input: 2.0
+    output: 10.0
+    source: "https://g"
+    request_defaults:
+      generation_config: {thinking_level: low}
+"""
+    )
+    p = prices.load(prices_path)
+    suite_path = _suite(tmp_path, n=2)
+    s = suite.load(suite_path)
+    keys = {}
+
+    def fake_call(model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):
+        fake_adapter.call_count += 1
+        keys.setdefault(model_id, set()).add(api_key)
+        return providers.Reply(output="ok", input_tokens=10, output_tokens=2, latency_ms=5, error=None)
+
+    fake_adapter.call = fake_call
+    record = runner.run(
+        s, "claude-sonnet-5-5", "gemini-4-argon", p, cap_usd=1.0,
+        state_dir=tmp_path / "state", suite_path=suite_path, name="g1",
+    )
+
+    assert fake_adapter.call_count == 4
+    assert keys["gemini-4-argon"] == {"test-gemini-key"}
+    assert keys["claude-sonnet-5-5"] == {"test-anthropic-key"}
+    assert record["request_params"]["candidate"] == {
+        "max_output_tokens": 16, "generation_config": {"thinking_level": "low"},
+    }

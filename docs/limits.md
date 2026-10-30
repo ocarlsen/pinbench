@@ -2,7 +2,7 @@
 
 What pinbench does not do, and the model-specific behavior it leaves to the registry. Part of [pinbench](../README.md).
 
-- Two providers: Anthropic and OpenAI. Adding a third is one file in `providers/`: create
+- Three providers: Anthropic, OpenAI and Google Gemini. Adding another is one file in `providers/`: create
   `pinbench/providers/<name>.py` with a `call(...)` and a `list_models(...)` function matching
   the shape in `providers/anthropic.py`, then register it in `providers/__init__.py` with one
   entry each in `ADAPTERS` and `ENV_KEYS` and one prefix line in `provider_for_id`. The

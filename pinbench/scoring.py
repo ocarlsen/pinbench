@@ -22,9 +22,9 @@ from typing import Optional
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
 # The vendor stop/finish reasons that mean "cut off by the output ceiling, not a natural
-# stop": Anthropic's `stop_reason` and OpenAI's `finish_reason` use different words for the
-# same event. This is the one place that mapping lives; every other module imports it.
-TRUNCATION_STOP_REASONS = {"max_tokens", "length"}
+# stop": Anthropic's `stop_reason`, OpenAI's `finish_reason` and Gemini's interaction
+# `status` use different words for the same event. This is the one place that mapping lives; every other module imports it.
+TRUNCATION_STOP_REASONS = {"max_tokens", "length", "incomplete"}
 
 
 def normalize(text: str, steps) -> str:
