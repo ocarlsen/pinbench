@@ -140,6 +140,6 @@ How far to trust the judge:
   claim outside the key facts) and is kept as it ran.
 - **Hand check:** a person scored the three items behind the HOLD blind (s04, s07, s10, six
   summaries). All 18 key-fact calls matched the judge. On extras the judge flagged two small
-  overreaches the person missed on a first read; on re-reading the passage, both were unsupported.
+  overreaches the person missed on a first read; neither claim appears in the passage.
 - **Run to run:** 3 of 20 judge records differed between the runs. Each run regenerates the
   summaries too, so that number mixes arm and judge variation; the verdict did not change.
