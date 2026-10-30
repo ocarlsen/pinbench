@@ -107,3 +107,39 @@ fewer findings beyond the planted ones (0.50 per item against 1.17). An "extra" 
 necessarily wrong, only outside the rubric, which is why it is a tolerance and not a hard
 failure. The whole run, judge included, cost $0.13 against a ceiling-based estimate of $1.25:
 the estimate assumes every call uses its full output ceiling, so it errs high on purpose.
+
+## Live key-facts run: Sonnet 5.5 vs Gemini 4 Argon
+
+`examples/suites/summaries-facts.yaml` on 2026-10-29, frozen at commit 304c190 before the full run
+(judge prompt hash `sha256:8d94aab8...`), judged by `gpt-6.1-sol`, from neither arm's vendor. Run twice.
+
+| check | run 1 | run 2 |
+|---|---|---|
+| judge_recall | candidate 30/30 vs incumbent 30/30 | candidate 30/30 vs incumbent 29/30 |
+| judge_extra | candidate 0.20/item vs incumbent 0.00; FAIL | candidate 0.20/item vs incumbent 0.00; FAIL |
+| cost | ratio 0.69; PASS | ratio 0.71; PASS |
+
+Verdict: **HOLD** on both runs. Argon stated every key fact at about 70% of Sonnet's cost, but
+wrote two claims per run that the passage does not support. One, on both runs, is item s04: the
+passage itself is inconsistent (the halves add up to a six-point win, the text says twelve), and
+Argon reported six points, on run 2 with a note saying so. True in the world, unsupported by the
+source; a summarizer should not silently correct its input. The passage is left as is so this
+run stays reproducible. The others were small embellishments ("sixth annual", "most lengthy
+discussion of the year"). Argon's introductory price doubles on 2026-12-01, which would also fail
+the cost check (about 1.4x Sonnet per item).
+
+How far to trust the judge:
+
+- **Rubric calibrated once, before the full run.** A 2-item probe showed the first points were too
+  specific (which fields bulk edit changes) and failed accurate summaries. All 30 points were
+  rewritten to core facts, for both arms; on the probe the rewrite helped the candidate more.
+- **Negative control** (`scripts/judge_control.py`): 9 of 10 deliberately bad summaries scored at
+  most one key fact and at least one unsupported claim. The tenth scored 0 of 3 facts but no
+  extras: every error in it was a wrong version of a key fact, which this judge counts as a miss.
+  A wrong claim outside the key facts counts as an extra. That control was mis-built (it had no
+  claim outside the key facts) and is kept as it ran.
+- **Hand check:** a person scored the three items behind the HOLD blind (s04, s07, s10, six
+  summaries). All 18 key-fact calls matched the judge. On extras the judge flagged two small
+  overreaches the person missed on a first read; neither claim appears in the passage.
+- **Run to run:** 3 of 20 judge records differed between the runs. Each run regenerates the
+  summaries too, so that number mixes arm and judge variation; the verdict did not change.
