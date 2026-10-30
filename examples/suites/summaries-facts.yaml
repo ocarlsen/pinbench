@@ -1,0 +1,210 @@
+# The summaries suite's ten passages and task, scored by a fixed judge instead of blind votes.
+# Each item lists three key facts, each at its core, that a faithful 2-3 sentence summary should
+# carry (recall); the judge also counts claims the passage does not support (extra). Use it when outputs are close
+# enough that an A/B vote is mostly taste.
+#
+# Policy: pinbench's strict default for recall (0.0) and 0.0 for extras, frozen before the full
+# run. A HOLD here means re-run or hand-check the judge's notes, not reject. Extras are 0.0, not
+# the review suite's 0.5, because an extra here is an invented claim, not an off-rubric finding.
+# - judge gpt-6.1-sol: from neither arm's vendor when comparing Claude and Gemini. It reasons by
+#   default and reasoning counts against max_output_tokens, hence the 3000 ceiling.
+# Calibrated 2026-10-29: the first probe's points carried finer detail (which fields bulk edit
+# changes, which keys navigate), and the judge failed accurate summaries that left it out, as a
+# short summary should. Points now state the core fact only. The rewrite was uniform across all
+# 30 points and both arms; on the probe it helped the candidate more (s02: candidate 1/3,
+# incumbent 2/3 under the old points). No rubric, policy or judge change after this commit.
+version: 1
+name: summaries-facts
+task: Summarize in 2-3 sentences.
+max_output_tokens: 300
+scoring:
+  labels: judge
+  votes: none
+policy:
+  min_items: 10
+  recall_tolerance_points: 0.0
+  extra_tolerance: 0.0
+  cost_tolerance: 0.25
+  require_votes_when_unlabeled: false
+judge:
+  model: gpt-6.1-sol
+  max_output_tokens: 3000
+  rubric: 'You are checking a short summary of a passage. Judge it only against the given rubric points;
+    each names one key fact a faithful summary should carry, stated at its core. A point is satisfied
+    when the summary states that core fact, in any words; it does not also need the passage''s finer details,
+    since a 2-3 sentence summary must leave some out. A point the summary gets wrong, or only hints at,
+    is not satisfied. Count as an extra finding each claim in the summary that the passage does not support:
+    an invented, wrong or distorted detail. Accurate details beyond the rubric points are not extra findings.'
+items:
+- id: s01
+  input: The Maple Hollow town council met on Tuesday evening to discuss the proposed resurfacing of Elm
+    Street, a project that has been delayed twice since spring because of budget shortfalls. Council member
+    Dana Price argued that the work could no longer wait, citing three reports of flat tires near the
+    intersection with Birch Avenue in the past month alone. The public works director estimated the job
+    would take eleven working days and cost roughly forty thousand dollars, a figure that drew some grumbling
+    from residents in the gallery who felt the number had crept up since the last estimate. After nearly
+    an hour of debate, the council voted four to one to approve the funding, with member Terrence Okafor
+    casting the lone dissenting vote. Resurfacing is now scheduled to begin the first week of next month,
+    weather permitting, and signage will go up along the detour route by Friday.
+  rubric_points:
+  - id: approved
+    description: The council approved funding for the Elm Street resurfacing
+  - id: cost
+    description: The job costs about forty thousand dollars
+  - id: start
+    description: Work is scheduled to start the first week of next month
+- id: s02
+  input: 'Version 3.4 of the Fernglow task tracker ships this week with a handful of changes users have
+    been asking for since the last major release. The biggest addition is a bulk-edit mode that lets a
+    person select several cards at once and change their due date, label, or assignee in a single action
+    instead of clicking through each one. Keyboard navigation has also been reworked: arrow keys now move
+    focus between cards in the current column, and pressing enter opens the focused card without reaching
+    for the mouse. On the smaller side, the changelog notes that the weekly digest email now groups overdue
+    items at the top instead of sorting everything by creation date, which several beta testers said made
+    the digest far more useful on a Monday morning. A handful of bugs were also fixed, including one where
+    archived boards would briefly reappear in the sidebar after a page refresh.'
+  rubric_points:
+  - id: bulk-edit
+    description: A bulk-edit mode lets users change several cards at once
+  - id: keyboard
+    description: Keyboard navigation was improved
+  - id: digest
+    description: The weekly digest email now puts overdue items first
+- id: s03
+  input: To make a simple weeknight lentil soup, start by rinsing one cup of dried green or brown lentils
+    and setting them aside while you chop one onion, two carrots, and two stalks of celery into small,
+    even pieces. Warm a few tablespoons of olive oil in a large pot over medium heat, then add the chopped
+    vegetables along with a pinch of salt and cook, stirring occasionally, until the onion turns soft
+    and translucent, roughly eight minutes. Stir in two cloves of minced garlic and a teaspoon of ground
+    cumin and cook for another minute until fragrant. Add the lentils along with six cups of vegetable
+    broth, a bay leaf, and a can of diced tomatoes, then bring everything to a gentle boil before lowering
+    the heat and letting it simmer uncovered for about thirty minutes, or until the lentils are tender.
+    Season with salt, pepper, and a squeeze of lemon juice just before serving.
+  rubric_points:
+  - id: vegetables
+    description: The soup starts by cooking chopped vegetables
+  - id: simmer
+    description: The lentils simmer in broth
+  - id: time
+    description: It simmers about thirty minutes, until the lentils are tender
+- id: s04
+  input: The Riverbend Otters pulled off a come-from-behind win on Saturday afternoon, trailing by eleven
+    points at halftime before outscoring the visiting Hartley Falcons twenty-six to nine in the second
+    half. Forward Mia Castellano led all scorers with twenty-two points and pulled down nine rebounds,
+    while her backcourt partner contributed a season-high seven assists and committed just one turnover
+    in thirty-four minutes of play. The Falcons had built their first-half lead on a string of three-pointers,
+    but the Otters adjusted their defense at the break, extending coverage to the perimeter and forcing
+    six steals in the third quarter alone. A late free-throw run sealed the twelve-point final margin.
+    The Otters now move to seven wins and three losses on the season and will host the division-leading
+    Crestwood Hawks next weekend in a game that could decide seeding heading into the playoffs.
+  rubric_points:
+  - id: comeback
+    description: The Otters came back from a halftime deficit to beat the Falcons
+  - id: castellano
+    description: Mia Castellano led the scoring with twenty-two points
+  - id: next
+    description: The Otters next host the division-leading Crestwood Hawks
+- id: s05
+  input: A slow-moving system is expected to bring several days of unsettled weather to the valley starting
+    Thursday, with forecasters calling for a mix of light rain in the morning hours giving way to scattered
+    showers by afternoon. Daytime highs will hover in the upper fifties, a noticeable drop from the mild
+    stretch the region has enjoyed over the past two weeks, and overnight lows could dip close to freezing
+    in the higher elevations to the north. Winds will stay light through Friday before picking up over
+    the weekend as the system begins to pull away, gusting to near thirty miles per hour along the ridgeline
+    on Saturday. Residents with outdoor plans are advised to keep an umbrella handy through the middle
+    of next week, as a second, weaker disturbance may follow closely behind the first and bring another
+    round of showers before clearer skies return.
+  rubric_points:
+  - id: rain
+    description: Rain or showers start Thursday
+  - id: cooler
+    description: Temperatures turn cooler
+  - id: second-system
+    description: A second disturbance may bring more showers into next week
+- id: s06
+  input: The Thistledown branch library will roll out a redesigned children's section starting next month,
+    replacing the cramped shelving along the back wall with lower, rounded units that staff say will be
+    easier for younger visitors to browse on their own. The renovation also adds a reading nook with floor
+    cushions near the window, a space the branch manager described as overdue after years of requests
+    from parents during story time. Funding for the project came from a combination of the library's annual
+    budget and a community fundraiser that brought in just over six thousand dollars last spring. While
+    the renovation is underway, the children's collection will be temporarily relocated to a set of tables
+    near the front entrance, and story time will move to the community room down the hall. The branch
+    expects the new section to be ready in time for the start of the school year.
+  rubric_points:
+  - id: redesign
+    description: The children's section is being redesigned
+  - id: relocation
+    description: The children's collection or story time moves temporarily during the work
+  - id: timing
+    description: The new section should be ready by the start of the school year
+- id: s07
+  input: Members of the Oakridge Garden Club gathered Sunday for their annual plant swap, an event that
+    has grown steadily since it began six years ago with a handful of neighbors trading tomato seedlings
+    in a driveway. This year's swap drew nearly ninety participants and filled two long rows of folding
+    tables with everything from heirloom pepper starts to divided perennials and a few unusual cuttings
+    nobody could quite identify. Volunteers ran a sign-in table where attendees logged what they brought,
+    a system the club adopted after last year's event ran short on tags and led to some good-natured confusion
+    about which plants belonged to whom. Several members also offered short, informal talks on composting
+    and pest control between trading sessions. Organizers say they are already looking at a larger venue
+    for next year, since this year's turnout outgrew the community center parking lot where the swap has
+    traditionally been held.
+  rubric_points:
+  - id: turnout
+    description: About ninety people took part
+  - id: extras
+    description: Attendees logged plants at a sign-in table, or members gave short talks (either one counts)
+  - id: venue
+    description: Organizers are looking for a larger venue next year
+- id: s08
+  input: Starting Monday, the number 14 bus route will follow a modified path through the Lindel Heights
+    neighborhood while crews repair a section of roadway damaged in last month's storm. Riders heading
+    toward downtown should board at the temporary stop on Crescent Drive rather than the usual stop on
+    Maple Court, which will be closed for the duration of the repair work. The transit authority estimates
+    the detour will add roughly six minutes to the route during peak hours, and has added one additional
+    bus to the morning schedule to help offset the delay. Evening service will run on its normal schedule,
+    since traffic volume on the affected block tends to be lighter after five o'clock. Signs marking the
+    temporary stop went up over the weekend, and the authority says text alerts are available for riders
+    who want a reminder once the detour ends and the route reverts to its usual path.
+  rubric_points:
+  - id: detour
+    description: The number 14 bus is detoured while a road is repaired
+  - id: stop
+    description: Riders must use a temporary stop on Crescent Drive
+  - id: delay
+    description: The detour adds about six minutes
+- id: s09
+  input: The Brookhaven Elementary fall fundraiser wrapped up Friday with organizers announcing it raised
+    just over eighteen thousand dollars, comfortably clearing the goal set at the start of the school
+    year. Unlike previous years, when the event centered on a single bake sale, this year's effort combined
+    a weekend craft fair with an online raffle that ran for two full weeks beforehand, a change the parent
+    organization credited with reaching families who could not attend in person. The top prize, a long
+    weekend at a lakeside cabin donated by a local family, drew more than four hundred entries on its
+    own. Proceeds will go toward replacing the aging playground equipment behind the gymnasium, a project
+    the school has been planning since a safety inspection flagged several worn components last winter.
+    Installation of the new equipment is expected to begin once the ground thaws in spring.
+  rubric_points:
+  - id: raised
+    description: The fundraiser raised about eighteen thousand dollars, beating its goal
+  - id: format
+    description: This year added a craft fair and an online raffle
+  - id: playground
+    description: Proceeds will replace the playground equipment
+- id: s10
+  input: This month's meeting of the Willow Creek book club tackled a sprawling historical novel that
+    split opinion more sharply than anything the group has read in the past year. Several members praised
+    the author's pacing through the middle chapters, where two previously separate storylines finally
+    converge, while others felt the ending resolved too quickly given how much time the book spent setting
+    up its central mystery. The discussion ran long, eventually spilling past the group's usual hour-long
+    limit as members debated whether the narrator's unreliable perspective was a clever device or simply
+    frustrating to read. A short side conversation about the author's earlier work led several members
+    to add that book to next month's shortlist. The group ultimately voted to revisit a lighter, shorter
+    novel for the next meeting, a deliberate contrast after two months of dense, multi-generational family
+    sagas.
+  rubric_points:
+  - id: split
+    description: The novel divided the club's opinion
+  - id: narrator
+    description: Members debated the unreliable narrator
+  - id: next-pick
+    description: The group chose a lighter, shorter book for next month

@@ -428,3 +428,18 @@ def test_freeze_hash_sensitive_to_rubric_points(tmp_path):
     other_points = '      - id: p1\n        description: "a different description"'
     path2 = _write(tmp_path, _judge_suite_text(rubric_points_block=other_points), name="b.yaml")
     assert suite.freeze_hash(suite.load(path1)) != suite.freeze_hash(suite.load(path2))
+
+
+def test_summaries_facts_example_matches_summaries_inputs():
+    """The judge variant must score the SAME passages and task as the vote suite, or the two
+    results are not about the same work."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "examples" / "suites"
+    votes = suite.load(root / "summaries.yaml")
+    facts = suite.load(root / "summaries-facts.yaml")
+    assert facts.task == votes.task
+    assert facts.max_output_tokens == votes.max_output_tokens
+    assert [(i.id, i.input) for i in facts.items] == [(i.id, i.input) for i in votes.items]
+    assert facts.scoring.labels == "judge"
+    assert all(len(i.rubric_points) == 3 for i in facts.items)

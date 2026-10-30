@@ -104,7 +104,7 @@ ids never appear.
 
 - [Commands](docs/commands.md): every subcommand, flag, exit code, refusal and warning.
 - [Configuration](docs/configuration.md): the optional `pinbench.yaml` and the precedence rule.
-- [Suite format](docs/suite-format.md): the fields of a suite file and the three example suites.
+- [Suite format](docs/suite-format.md): the fields of a suite file and the four example suites.
 - [Judge scoring](docs/judge-scoring.md): one fixed, blind judge model for open-ended tasks; the live judge run.
 - [What the live runs caught](docs/live-runs.md): four failures that became shipped checks, and a HOLD for contrast.
 - [Design decisions](docs/design.md): why pins, frozen inputs, a blind page, a hard cap, a printed rule, a bump on a branch.

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+`scripts/judge_control.py` and `examples/controls/summaries-facts-controls.yaml`: a negative
+control for a judge suite. One deliberately bad summary per item (one fact kept, one wrong, one
+left out, one invented claim) goes through the suite's judge exactly as an arm's output would;
+each must score at most `max_hits` points and at least `min_extra` unsupported claims, and any
+lenient grade or judge error exits 1. Offline tests prove a lenient judge goes red.
+
+`examples/suites/summaries-facts.yaml`: the summaries suite's passages and task, scored by a
+fixed judge against three key facts per item, with unsupported claims counted as extras. For
+outputs too close for a useful A/B vote. Judge `gpt-6.1-sol` (price row added), from neither
+vendor of a Claude-vs-Gemini comparison. Strict tolerances (0.0 recall, 0.0 extras),
+frozen before the full run; the header records the one rubric calibration after a 2-item probe.
+
 Google Gemini provider (`pinbench/providers/gemini.py`, `GEMINI_API_KEY`, ids starting
 `gemini-`), on the Interactions API (`POST /v1beta/interactions`, key in the
 `x-goog-api-key` header, `store: false`). Billed output is visible plus thought tokens

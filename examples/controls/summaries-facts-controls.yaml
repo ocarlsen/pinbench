@@ -1,0 +1,51 @@
+# Negative controls for examples/suites/summaries-facts.yaml: one deliberately bad summary per
+# item, sent through the suite's judge exactly as an arm's output would be. Each keeps at most
+# one key fact right, gets one wrong, leaves one out, and invents one claim the passage does not
+# support. A judge that passes these is too lenient to trust. Run with scripts/judge_control.py.
+version: 1
+suite: summaries-facts
+expect:
+  max_hits: 1     # at most one rubric point satisfied
+  min_extra: 1    # at least one unsupported claim counted
+controls:
+  - id: s01
+    summary: >-
+      The Maple Hollow council unanimously rejected funding for the Elm Street resurfacing,
+      which would have cost about forty thousand dollars. The mayor promised to revisit the
+      project next year.
+  - id: s02
+    summary: >-
+      Fernglow 3.4 adds a dark mode and a new calendar view, and drops support for older
+      browsers. Keyboard shortcuts were reworked.
+  - id: s03
+    summary: >-
+      This lentil soup is baked in the oven for two hours with chicken stock and cream. It is
+      finished with fresh basil.
+  - id: s04
+    summary: >-
+      The Riverbend Otters lost to the Hartley Falcons after leading at halftime, despite
+      thirty points from Mia Castellano. The coach blamed a late injury.
+  - id: s05
+    summary: >-
+      A heat wave arrives Thursday with highs near ninety and clear skies through the weekend.
+      A second, weaker disturbance may follow next week.
+  - id: s06
+    summary: >-
+      The Thistledown library is closing its children's section permanently to make room for a
+      computer lab, funded by a state grant. The change takes effect next month.
+  - id: s07
+    summary: >-
+      The Oakridge Garden Club's first plant swap drew about twenty people to the town park.
+      Organizers plan to move it indoors next year.
+  - id: s08
+    summary: >-
+      The number 14 bus route is cancelled permanently starting Monday, and riders should
+      switch to the number 9. The transit authority cited budget cuts.
+  - id: s09
+    summary: >-
+      Brookhaven Elementary's bake sale raised about eight thousand dollars, short of its goal.
+      The money will go to new library books.
+  - id: s10
+    summary: >-
+      The Willow Creek book club unanimously loved this month's science fiction novel and
+      finished early. They chose a lighter, shorter book for next month.

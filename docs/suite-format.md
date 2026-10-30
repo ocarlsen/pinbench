@@ -1,6 +1,6 @@
 # Suite format
 
-The fields of a frozen suite file and the three example suites. Part of [pinbench](../README.md).
+The fields of a frozen suite file and the four example suites. Part of [pinbench](../README.md).
 
 A suite is a frozen set of inputs in `suite.yaml` (or `.json` with the same keys):
 
@@ -20,10 +20,11 @@ Either every item has `expect` or none do. The exception is `scoring.labels: jud
 `description`) plus a suite-level `judge` block (`model`, `rubric`, optional
 `max_output_tokens`).
 
-Three example suites ship in `examples/suites/`:
+Four example suites ship in `examples/suites/`:
 
 | suite | items | scoring |
 |---|---|---|
 | `capitals.yaml` | 12 labeled, world capitals | exact match |
 | `summaries.yaml` | 10 unlabeled, short synthetic paragraphs | vote-only |
+| `summaries-facts.yaml` | the same 10 paragraphs, three key facts each | fixed judge model (recall of key facts, unsupported claims as extras) |
 | `review.yaml` | 6 synthetic code/config snippets, one planted defect and a decoy each | fixed judge model |
