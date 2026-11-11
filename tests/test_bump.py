@@ -246,3 +246,23 @@ def test_bump_cross_provider_switches_provider(tmp_path):
     assert result.committed is True
     slot = registry.load(pins_path).slots["classifier"]
     assert (slot.model, slot.provider) == ("claude-haiku-4-5", "anthropic")
+
+
+def test_bump_succeeds_when_pins_file_is_not_at_the_repo_root(tmp_path, monkeypatch):
+    repo, root_pins = _init_repo(tmp_path)
+    sub = repo / "examples"
+    sub.mkdir()
+    pins_path = sub / "pins.yaml"
+    pins_path.write_text(root_pins.read_text())
+    _git(repo, "add", "examples/pins.yaml")
+    _git(repo, "commit", "-q", "-m", "add nested pins")
+    _write_run_and_report(repo, "r1", "gpt-4o-mini", "gpt-5-mini", "RECOMMEND")
+    monkeypatch.chdir(repo)  # the default state dir ".pinbench" is relative to the repo root
+
+    result = bump.bump(pins_path, "classifier", "gpt-5-mini", "r1", state_dir=".pinbench")
+
+    assert result.committed is True
+    assert registry.load(pins_path).slots["classifier"].model == "gpt-5-mini"
+    files = _git(repo, "show", "--name-only", "--pretty=format:", "HEAD").stdout.split()
+    assert "examples/pins.yaml" in files
+    assert ".pinbench/runs/r1/report.md" in files

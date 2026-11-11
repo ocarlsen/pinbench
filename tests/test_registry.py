@@ -170,3 +170,24 @@ def test_set_model_unknown_id_prefix_refused(tmp_path):
     with pytest.raises(registry.RegistryError):
         registry.set_model(path, "summarizer", "mystery-model-1")
     assert path.read_text() == PINS_OK
+
+
+def test_set_model_preserves_four_space_indent(tmp_path):
+    path = tmp_path / "pins.yaml"
+    path.write_text(
+        "version: 1\n"
+        "slots:\n"
+        "    summarizer:\n"
+        "        model: claude-sonnet-4-5\n"
+        "        provider: anthropic\n"
+        "    classifier:\n"
+        "        model: gpt-4o-mini\n"
+        "        provider: openai\n"
+    )
+    registry.set_model(path, "summarizer", "claude-opus-5-5")
+    text = path.read_text()
+    assert "        model: claude-opus-5-5\n" in text
+    assert "        model: gpt-4o-mini\n" in text
+    reg = registry.load(path)
+    assert reg.slots["summarizer"].model == "claude-opus-5-5"
+    assert reg.slots["classifier"].model == "gpt-4o-mini"

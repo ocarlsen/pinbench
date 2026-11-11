@@ -658,3 +658,25 @@ def test_collect_results_refuses_duplicate_custom_id(monkeypatch):
             return None
     with pytest.raises(ValueError, match="duplicate custom_id"):
         batch_mod.collect_results(FakeAnthropic, None, "b1", "k", ["0000-incumbent"])
+
+
+def test_wait_for_batch_rejects_nonpositive_poll_interval():
+    for bad in (0, -5):
+        with pytest.raises(ValueError):
+            batch_mod.wait_for_batch(lambda: {"processing_status": "in_progress"}, "b1", bad, 60, lambda s: None, lambda m: None)
+
+
+def test_batch_limit_zero_is_not_unlimited(tmp_path, fake_http, no_sleep):
+    suite_path = _write_suite(tmp_path, n=3)
+    suite = suite_mod.load(suite_path)
+    prices = prices_mod.load(_write_prices(tmp_path))
+    plan_result = runner_mod.plan(suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, batch=True, limit=0)
+
+    try:
+        batch_mod.run_batch(
+            suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, plan_result, 1.0, 0, "r0", tmp_path / "state", suite_path,
+        )
+    except Exception:  # noqa: BLE001 - the unscripted fake has nothing to say about an empty batch
+        pass
+    # limit=0 means zero items, so no request may have been built for any item.
+    assert all(len(post["requests"]) == 0 for post in fake_http.create_posts)

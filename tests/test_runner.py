@@ -164,3 +164,54 @@ def test_run_charges_estimate_when_usage_missing(tmp_path, fake_adapter):
     )
     item = record["items"][0]
     assert item["incumbent"]["cost_usd"] > 0
+
+
+def test_unexpected_exception_mid_run_still_writes_run_json(tmp_path, fake_adapter):
+    import pytest
+
+    suite_path = _suite(tmp_path, n=3)
+    s = suite.load(suite_path)
+    p = _prices(tmp_path)
+    state_dir = tmp_path / "state"
+
+    real_call = fake_adapter.call
+
+    def flaky_call(*args, **kwargs):
+        if fake_adapter.call_count == 3:  # the 4th call: item 2, incumbent arm... 0-based count
+            fake_adapter.call_count += 1
+            raise TimeoutError("read timed out")
+        return real_call(*args, **kwargs)
+
+    fake_adapter.call = flaky_call
+
+    with pytest.raises(TimeoutError):
+        runner.run(s, "claude-sonnet-4-5", "gpt-4o-mini", p, cap_usd=1.0, state_dir=state_dir, suite_path=suite_path, name="r1")
+
+    on_disk = json.loads((state_dir / "runs" / "r1" / "run.json").read_text())
+    assert on_disk["stopped_early"] is True
+    # calls 1-3 completed: item q00 both arms, item q01 incumbent (kept with no candidate)
+    assert [i["id"] for i in on_disk["items"]] == ["q00", "q01"]
+    assert on_disk["items"][0]["candidate"]["output"] == "echo:Q0?"
+    assert on_disk["items"][1]["incumbent"]["output"] == "echo:Q1?"
+    assert on_disk["items"][1]["candidate"] is None
+
+
+def test_limit_zero_is_not_unlimited(tmp_path, fake_adapter):
+    suite_path = _suite(tmp_path, n=3)
+    s = suite.load(suite_path)
+    record = runner.run(
+        s, "claude-sonnet-4-5", "gpt-4o-mini", _prices(tmp_path), cap_usd=1.0, limit=0,
+        state_dir=tmp_path / "state", suite_path=suite_path, name="r0",
+    )
+    assert record["items"] == [] or len(record["items"]) == 0
+    assert fake_adapter.call_count == 0
+
+
+def test_cli_rejects_nonpositive_limit(capsys):
+    import pytest
+    from pinbench import cli
+
+    for bad in ("0", "-1"):
+        with pytest.raises(SystemExit):
+            cli.main(["plan", "suite.yaml", "--incumbent", "a", "--candidate", "b", "--limit", bad])
+        assert "must be at least 1" in capsys.readouterr().err

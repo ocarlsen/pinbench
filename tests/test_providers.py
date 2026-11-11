@@ -205,3 +205,33 @@ def test_anthropic_http_error_becomes_reply_error(monkeypatch):
     assert reply.output is None
     assert reply.error is not None
     assert "429" in reply.error
+
+
+class _RaisingResponse:
+    def __init__(self, exc=None, body=b""):
+        self._exc = exc
+        self._body = body
+
+    def read(self):
+        if self._exc:
+            raise self._exc
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.mark.parametrize("module", [anthropic_provider, openai_provider])
+@pytest.mark.parametrize("failure", [
+    _RaisingResponse(exc=TimeoutError("timed out")),
+    _RaisingResponse(body=b"<html>gateway</html>"),
+])
+def test_read_timeout_or_bad_json_becomes_reply_error(monkeypatch, module, failure):
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda req, timeout=None: failure)
+    reply = module.call("some-model", "sys", "hi", 16, "key")
+    assert reply.output is None
+    assert reply.error
