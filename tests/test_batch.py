@@ -666,17 +666,39 @@ def test_wait_for_batch_rejects_nonpositive_poll_interval():
             batch_mod.wait_for_batch(lambda: {"processing_status": "in_progress"}, "b1", bad, 60, lambda s: None, lambda m: None)
 
 
-def test_batch_limit_zero_is_not_unlimited(tmp_path, fake_http, no_sleep):
+def test_batch_limit_zero_is_not_unlimited(tmp_path, monkeypatch, fake_http, no_sleep):
     suite_path = _write_suite(tmp_path, n=3)
     suite = suite_mod.load(suite_path)
     prices = prices_mod.load(_write_prices(tmp_path))
     plan_result = runner_mod.plan(suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, batch=True, limit=0)
 
-    try:
+    submitted = []
+
+    class Stop(Exception):
+        pass
+
+    def fake_create(requests, api_key, timeout=60):
+        submitted.append(requests)
+        raise Stop
+
+    monkeypatch.setattr(anthropic_provider, "create_batch", fake_create)
+    with pytest.raises(Stop):
         batch_mod.run_batch(
             suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, plan_result, 1.0, 0, "r0", tmp_path / "state", suite_path,
         )
-    except Exception:  # noqa: BLE001 - the unscripted fake has nothing to say about an empty batch
-        pass
-    # limit=0 means zero items, so no request may have been built for any item.
-    assert all(len(post["requests"]) == 0 for post in fake_http.create_posts)
+    # limit=0 means zero items: the batch was reached, and carried no request.
+    assert submitted == [[]]
+
+
+def test_batch_run_refuses_nonpositive_poll_interval_before_any_spend(tmp_path, fake_http, no_sleep):
+    suite_path = _write_suite(tmp_path, n=2)
+    suite = suite_mod.load(suite_path)
+    prices = prices_mod.load(_write_prices(tmp_path))
+    for bad in (0, -3):
+        with pytest.raises(runner_mod.PlanRefused, match="poll interval"):
+            runner_mod.run(
+                suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, cap_usd=1.0, state_dir=tmp_path / "state",
+                suite_path=suite_path, name="r0", batch=True, poll_interval_s=bad,
+            )
+    assert fake_http.create_posts == []
+    assert not (tmp_path / "state" / "runs" / "r0").exists()

@@ -8,6 +8,7 @@ success, and is recorded as such with the reason it happened.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -68,7 +69,7 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
     except urllib.error.URLError as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=str(exc))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         # A read timeout (TimeoutError / socket.timeout) or a body that is not valid JSON
         # surfaces from resp.read() / json.loads, not from urlopen; either is a failed call.
         latency_ms = int((time.monotonic() - started) * 1000)

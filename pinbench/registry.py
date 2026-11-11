@@ -113,7 +113,7 @@ def set_model(path, slot_name: str, new_id: str) -> None:
 
     lines = path.read_text().splitlines(keepends=True)
     # The slot header's indent is whatever the file uses (2, 4, ...); a slot ends at the next
-    # non-blank line indented no deeper than its header.
+    # non-blank, non-comment line indented no deeper than its header.
     slot_header = re.compile(rf"^( +){re.escape(slot_name)}:\s*$")
     header_indent = 0
     model_line = re.compile(r"^(\s+model:\s*)(\S+)(.*)$")
@@ -130,7 +130,7 @@ def set_model(path, slot_name: str, new_id: str) -> None:
             header_indent = len(header.group(1))
             out.append(line)
             continue
-        if in_slot and line.strip() and len(line) - len(line.lstrip(" ")) <= header_indent:
+        if in_slot and line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip(" ")) <= header_indent:
             # a sibling slot (or a dedent) started; stop looking
             in_slot = False
         if in_slot and not edited:

@@ -191,3 +191,18 @@ def test_set_model_preserves_four_space_indent(tmp_path):
     reg = registry.load(path)
     assert reg.slots["summarizer"].model == "claude-opus-5-5"
     assert reg.slots["classifier"].model == "gpt-4o-mini"
+
+
+def test_set_model_ignores_column_zero_comment_inside_slot(tmp_path):
+    path = tmp_path / "pins.yaml"
+    path.write_text(
+        "version: 1\n"
+        "slots:\n"
+        "  summarizer:\n"
+        "# todo: revisit\n"
+        "    model: claude-sonnet-4-5\n"
+        "    provider: anthropic\n"
+    )
+    registry.set_model(path, "summarizer", "claude-opus-5-5")
+    assert registry.load(path).slots["summarizer"].model == "claude-opus-5-5"
+    assert "# todo: revisit\n" in path.read_text()

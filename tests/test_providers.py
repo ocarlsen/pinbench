@@ -1,9 +1,11 @@
+import http.client
 import json
 from pathlib import Path
 
 import pytest
 
 from pinbench.providers import anthropic as anthropic_provider
+from pinbench.providers import gemini as gemini_provider
 from pinbench.providers import openai as openai_provider
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -224,9 +226,10 @@ class _RaisingResponse:
         return False
 
 
-@pytest.mark.parametrize("module", [anthropic_provider, openai_provider])
+@pytest.mark.parametrize("module", [anthropic_provider, openai_provider, gemini_provider])
 @pytest.mark.parametrize("failure", [
     _RaisingResponse(exc=TimeoutError("timed out")),
+    _RaisingResponse(exc=http.client.IncompleteRead(b"par", 10)),
     _RaisingResponse(body=b"<html>gateway</html>"),
 ])
 def test_read_timeout_or_bad_json_becomes_reply_error(monkeypatch, module, failure):
@@ -235,3 +238,14 @@ def test_read_timeout_or_bad_json_becomes_reply_error(monkeypatch, module, failu
     reply = module.call("some-model", "sys", "hi", 16, "key")
     assert reply.output is None
     assert reply.error
+
+
+@pytest.mark.parametrize("failure", [
+    _RaisingResponse(exc=TimeoutError("timed out")),
+    _RaisingResponse(exc=http.client.IncompleteRead(b"par", 10)),
+    _RaisingResponse(body=b"not json"),
+])
+def test_open_batch_request_turns_read_failures_into_batch_error(monkeypatch, failure):
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", lambda req, timeout=None: failure)
+    with pytest.raises(anthropic_provider.BatchError):
+        anthropic_provider._open_batch_request(object(), 5, "get_batch")

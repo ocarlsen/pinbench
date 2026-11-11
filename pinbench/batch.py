@@ -181,6 +181,10 @@ def run_batch(
     from . import runner as runner_mod
     from .providers import anthropic as anthropic_mod
 
+    if poll_interval_s < 1:
+        # Refuse before any spend: the wait loop runs only after the batch is submitted.
+        raise ValueError(f"poll interval must be at least 1 second, got {poll_interval_s}")
+
     sleep_fn = sleep_fn or time.sleep
     print_fn = print_fn or print
 

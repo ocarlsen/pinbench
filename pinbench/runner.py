@@ -254,6 +254,9 @@ def run(
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
+    if batch and poll_interval_s < 1:
+        raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
+
     plan_result = plan(
         suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir,
         allow_self_judge=allow_self_judge, batch=batch,
