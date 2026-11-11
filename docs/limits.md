@@ -41,8 +41,7 @@ What pinbench does not do, and the model-specific behavior it leaves to the regi
   request -- so the cost cap gates submission only; an over-run discovered after results come
   back is recorded (`run.json`'s `batch.cap_exceeded_after_results`) and warned about loudly,
   never prevented after the fact. `latency_ms` is always `null` on a batch item: there is no
-  meaningful per-call timing to record, and the report shows "batch" rather than a fabricated
-  number. Most batches finish in under an hour; a batch can take up to 24 hours before it
+  meaningful per-call timing to record. Most batches finish in under an hour; a batch can take up to 24 hours before it
   `expired`s, so the default `--max-wait` is 86400 seconds (riding to that expiry rather than
   failing fast and leaving a half-finished wait to re-fetch by hand). Results are kept 29 days.
   There is no `--resume-batch`: if `--max-wait` or Ctrl-C ends `run --batch` early, the batch

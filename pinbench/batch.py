@@ -124,6 +124,8 @@ def collect_results(anthropic_mod, providers_mod, batch_id, api_key, expected_cu
     by_id = {}
     for line in lines:
         cid = line.get("custom_id")
+        if cid in by_id:
+            raise ValueError(f"batch {batch_id}: duplicate custom_id {cid!r} in results; refusing to guess which is right")
         result = line.get("result") or {}
         by_id[cid] = (anthropic_mod.reply_from_batch_result(line), result.get("type"))
 

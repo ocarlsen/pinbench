@@ -18,7 +18,7 @@ submission only (one batch is one request; there is no per-call point left to st
 an over-run discovered after results come back is recorded
 (`run.json`'s `batch.cap_exceeded_after_results`) and warned about loudly, never prevented
 after the fact since the money is already spent. `latency_ms` is `null` on every batch item
-(no per-call timing exists); the report shows "batch" rather than a fabricated number. Default
+(no per-call timing exists). Default
 `--max-wait` is 86400 seconds, riding to the vendor's own 24-hour expiry rather than failing
 fast on a batch that is usually about to finish anyway ("most batches completing within 1
 hour"). No `--resume-batch`: a batch left running past `--max-wait` or Ctrl-C keeps its ids in

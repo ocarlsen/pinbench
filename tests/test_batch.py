@@ -633,3 +633,28 @@ def test_batch_max_wait_exits_leaving_batch_running(tmp_path, monkeypatch, fake_
     assert "still running" in err
     # batch.json is on disk even though the run never finished.
     assert (tmp_path / ".pinbench" / "runs" / "stuck" / "batch.json").exists()
+
+
+def test_plan_batch_self_judge_discounts_once(tmp_path, fake_http):
+    # review B1: a model named twice (judge == an arm) must not be discounted twice, or the
+    # cap gate sees a quarter-price estimate.
+    suite_path = _write_suite(tmp_path, judge=True)
+    prices = prices_mod.load(_write_prices(tmp_path))
+    suite = suite_mod.load(suite_path)
+    sync_plan = runner_mod.plan(suite, "claude-haiku-4-5", "claude-sonnet-5-5", prices, batch=False, allow_self_judge=True)
+    batch_plan = runner_mod.plan(suite, "claude-haiku-4-5", "claude-sonnet-5-5", prices, batch=True, allow_self_judge=True)
+    assert batch_plan.estimate.total_usd == pytest.approx(sync_plan.estimate.total_usd * 0.5)
+
+
+def test_collect_results_refuses_duplicate_custom_id(monkeypatch):
+    class FakeAnthropic:
+        @staticmethod
+        def fetch_results(batch_id, api_key):
+            line = {"custom_id": "0000-incumbent", "result": {"type": "expired"}}
+            return [line, dict(line)]
+
+        @staticmethod
+        def reply_from_batch_result(line):
+            return None
+    with pytest.raises(ValueError, match="duplicate custom_id"):
+        batch_mod.collect_results(FakeAnthropic, None, "b1", "k", ["0000-incumbent"])

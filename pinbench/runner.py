@@ -84,7 +84,9 @@ def _batch_prices(prices, *model_ids) -> "prices_mod.Prices":
         if model_id is None:
             continue
         try:
-            rows[model_id] = rows[model_id].at_batch()
+            # From the ORIGINAL row: a model named twice (self-judge, or incumbent ==
+            # candidate) must be discounted once, not compounded.
+            rows[model_id] = prices.rows[model_id].at_batch()
         except prices_mod.PricesError as exc:
             raise PlanRefused(str(exc)) from exc
     return prices_mod.Prices(version=prices.version, checked=prices.checked, rows=rows)
