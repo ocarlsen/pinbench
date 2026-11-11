@@ -109,6 +109,9 @@ def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
     judge_calls_line = _judge_calls_line(run)
     if judge_calls_line:
         lines.append(f"  {judge_calls_line}")
+    batch_line = _batch_line(run)
+    if batch_line:
+        lines.append(batch_line)
     for arm in ("incumbent", "candidate"):
         errs = scoring_mod.error_count(run, arm)
         if errs:
@@ -148,6 +151,9 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
     judge_calls_line = _judge_calls_line(run)
     if judge_calls_line:
         lines.append(f"- {judge_calls_line}")
+    batch_line = _batch_line(run)
+    if batch_line:
+        lines.append(f"- {batch_line}")
     lines.append("")
     lines.append("## Checks")
     lines.append("")
@@ -184,6 +190,25 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "rule": result.rule_text,
     }
     return json.dumps(payload, indent=2) + "\n"
+
+
+def _batch_line(run: dict) -> Optional[str]:
+    """'Batch: arms msgbatch_x (N succeeded, M errored); judge msgbatch_y (...)' for a
+    `--batch` run, else None. Names both batch ids and their final request_counts so a
+    reader can tell a batch run from a sync one without opening run.json."""
+    batch = run.get("batch")
+    if not batch:
+        return None
+    arms = batch.get("arms") or {}
+    arm_counts = arms.get("request_counts") or {}
+    text = f"Batch: arms {arms.get('id')} ({arm_counts.get('succeeded', 0)} succeeded, {arm_counts.get('errored', 0)} errored)"
+    judge = batch.get("judge")
+    if judge:
+        judge_counts = judge.get("request_counts") or {}
+        text += f"; judge {judge.get('id')} ({judge_counts.get('succeeded', 0)} succeeded, {judge_counts.get('errored', 0)} errored)"
+    else:
+        text += "; judge none"
+    return text
 
 
 def _judge_calls_line(run: dict) -> Optional[str]:

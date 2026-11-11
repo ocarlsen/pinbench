@@ -29,6 +29,30 @@ class PriceRow:
     # call to this model, before the suite's own `params` are applied on top. Empty by
     # default: a model with no row-level opinion sends nothing extra.
     request_defaults: dict = field(default_factory=dict)
+    # The Message Batches API discount for this model (Anthropic: "a 50 percent discount on
+    # both input and output tokens" -- platform.claude.com/docs/en/about-claude/pricing,
+    # "Batch processing"). None means this row has no batch price at all: `--batch` refuses
+    # to run that model rather than guess a discount. When set, must be in (0, 1]; a value
+    # of 1 would be a real but unusual "no discount" batch row, 0 or negative is never a
+    # real price.
+    batch_multiplier: Optional[float] = None
+
+    def at_batch(self) -> "PriceRow":
+        """A copy of this row with input/output multiplied by batch_multiplier.
+
+        Raises PricesError when this row has no batch_multiplier -- never guesses a
+        discount for a model that hasn't published one.
+        """
+        if self.batch_multiplier is None:
+            raise PricesError(f"no batch price for '{self.model}': add batch_multiplier to its prices.yaml row")
+        return PriceRow(
+            model=self.model,
+            input=self.input * self.batch_multiplier,
+            output=self.output * self.batch_multiplier,
+            source=self.source,
+            request_defaults=self.request_defaults,
+            batch_multiplier=self.batch_multiplier,
+        )
 
 
 @dataclass
@@ -50,12 +74,18 @@ def load(path) -> Prices:
         request_defaults = body.get("request_defaults") or {}
         if not isinstance(request_defaults, dict):
             raise PricesError(f"prices: {model} request_defaults must be a mapping, got {type(request_defaults).__name__}")
+        batch_multiplier = body.get("batch_multiplier")
+        if batch_multiplier is not None:
+            batch_multiplier = float(batch_multiplier)
+            if not (0 < batch_multiplier <= 1):
+                raise PricesError(f"prices: {model} batch_multiplier must be > 0 and <= 1, got {batch_multiplier}")
         rows[model] = PriceRow(
             model=model,
             input=float(body["input"]),
             output=float(body["output"]),
             source=body.get("source", ""),
             request_defaults=request_defaults,
+            batch_multiplier=batch_multiplier,
         )
     return Prices(version=raw.get("version", 1), checked=str(raw.get("checked", "")), rows=rows)
 

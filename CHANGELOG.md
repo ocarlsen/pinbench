@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+`run --batch` / `plan --batch`: send every Anthropic arm (and the judge, if any) as one
+Anthropic Message Batch at the batch discount instead of one call per item
+(`pinbench/batch.py`, `providers/anthropic.py`'s `create_batch`/`get_batch`/`fetch_results`/
+`cancel_batch`). Anthropic-only -- a non-Anthropic id among incumbent/candidate/judge refuses
+the whole run before anything is sent, never a half-batched mix. The discount is a new
+`batch_multiplier` row in `prices.yaml` (0.5 on the three Claude rows here, "a 50 percent
+discount on both input and output tokens":
+https://platform.claude.com/docs/en/about-claude/pricing); a row with no `batch_multiplier`
+refuses to run under `--batch` rather than guess a price. Results are mapped back to items by
+`custom_id`, never by line position -- the vendor states results may come back out of order
+(https://platform.claude.com/docs/en/build-with-claude/batch-processing). An errored/canceled/
+expired result is an arm error costing $0, same as a 4xx on the sync path. The cost cap gates
+submission only (one batch is one request; there is no per-call point left to stop mid-run);
+an over-run discovered after results come back is recorded
+(`run.json`'s `batch.cap_exceeded_after_results`) and warned about loudly, never prevented
+after the fact since the money is already spent. `latency_ms` is `null` on every batch item
+(no per-call timing exists). Default
+`--max-wait` is 86400 seconds, riding to the vendor's own 24-hour expiry rather than failing
+fast on a batch that is usually about to finish anyway ("most batches completing within 1
+hour"). No `--resume-batch`: a batch left running past `--max-wait` or Ctrl-C keeps its ids in
+the run's `batch.json`, but re-running the same command re-submits (and pays again).
+
 `scripts/judge_control.py` and `examples/controls/summaries-facts-controls.yaml`: a negative
 control for a judge suite. One deliberately bad summary per item (one fact kept, one wrong, one
 left out, one invented claim) goes through the suite's judge exactly as an arm's output would;

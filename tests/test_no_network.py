@@ -5,8 +5,10 @@ import json
 import socket
 
 import pytest
+import yaml
 
 from pinbench import cli
+from pinbench.providers import anthropic as anthropic_provider
 
 
 @pytest.fixture(autouse=True)
@@ -270,3 +272,113 @@ items:
     err = capsys.readouterr().err
     assert "judge was never called for incumbent" in err
     assert "all 1 item(s) skipped" in err
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_batch_pipeline_never_touches_network(tmp_path, monkeypatch, capsys):
+    """`run --batch` -> `vote` -> `report` -> `bump --no-git`, end to end, with the batch
+    endpoints faked at the urllib layer (never through `fake_adapter`, since --batch calls
+    `providers/anthropic.py` directly -- it is Anthropic-only) and `socket.socket` forbidden.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    created = {}
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url
+        method = req.get_method()
+        if url.endswith("/v1/messages/batches") and method == "POST":
+            created["body"] = json.loads(req.data.decode("utf-8"))
+            return _FakeResponse(json.dumps({
+                "id": "msgbatch_nn", "processing_status": "in_progress",
+                "request_counts": {"processing": 4, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0},
+                "created_at": "2026-11-10T00:00:00Z", "ended_at": None, "expires_at": "2026-11-11T00:00:00Z",
+                "cancel_initiated_at": None, "results_url": None,
+            }).encode("utf-8"))
+        if url.endswith("/v1/messages/batches/msgbatch_nn") and method == "GET":
+            return _FakeResponse(json.dumps({
+                "id": "msgbatch_nn", "processing_status": "ended",
+                "request_counts": {"processing": 0, "succeeded": 4, "errored": 0, "canceled": 0, "expired": 0},
+                "created_at": "2026-11-10T00:00:00Z", "ended_at": "2026-11-10T00:01:00Z",
+                "expires_at": "2026-11-11T00:00:00Z", "cancel_initiated_at": None,
+                "results_url": "https://api.anthropic.com/v1/messages/batches/msgbatch_nn/results",
+            }).encode("utf-8"))
+        if url.endswith("/v1/messages/batches/msgbatch_nn/results"):
+            def line(custom_id, text):
+                return json.dumps({"custom_id": custom_id, "result": {"type": "succeeded", "message": {
+                    "id": "msg_" + custom_id, "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+                    "content": [{"type": "text", "text": text}], "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 4},
+                }}})
+            return _FakeResponse("\n".join([
+                line("0000-incumbent", "A0"), line("0000-candidate", "A0 too"),
+                line("0001-incumbent", "A1"), line("0001-candidate", "A1 too"),
+            ]).encode("utf-8"))
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(anthropic_provider.time, "sleep", lambda s: None)
+
+    pins_path = _write(
+        tmp_path / "pins.yaml",
+        """\
+version: 1
+slots:
+  classifier:
+    model: claude-sonnet-5-5
+    provider: anthropic
+    owner: owen
+""",
+    )
+    prices_path = tmp_path / "prices.yaml"
+    prices_path.write_text(yaml.safe_dump({
+        "version": 1, "checked": "2026-10-26",
+        "models": {
+            "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "source": "https://x", "batch_multiplier": 0.5},
+            "claude-haiku-5-5": {"input": 0.1, "output": 0.5, "source": "https://y", "batch_multiplier": 0.5},
+        },
+    }, sort_keys=False))
+    suite_path = tmp_path / "suite.yaml"
+    suite_path.write_text(yaml.safe_dump({
+        "version": 1, "name": "demo-batch", "task": "Answer briefly.", "max_output_tokens": 16,
+        "scoring": {"labels": "none", "votes": "none"},
+        "policy": {"min_items": 2, "require_votes_when_unlabeled": False},
+        "items": [{"id": "q01", "input": "Q1?"}, {"id": "q02", "input": "Q2?"}],
+    }, sort_keys=False))
+    state_dir = tmp_path / ".pinbench"
+
+    rc = cli.main([
+        "run", str(suite_path), "--incumbent", "claude-sonnet-5-5", "--candidate", "claude-haiku-5-5",
+        "--cap", "1.0", "--prices", str(prices_path), "--state", str(state_dir), "--name", "nn1", "--batch",
+    ])
+    assert rc == 0
+    assert created["body"]["requests"][0]["custom_id"] == "0000-incumbent"
+
+    rc = cli.main(["vote", "nn1", "--state", str(state_dir)])
+    assert rc == 0
+    assert (state_dir / "runs" / "nn1" / "vote.html").exists()
+
+    rc = cli.main(["report", "nn1", "--state", str(state_dir), "--format", "text"])
+    assert rc == 0
+    assert (state_dir / "runs" / "nn1" / "report.md").exists()
+
+    rc = cli.main([
+        "bump", "classifier", "--to", "claude-haiku-5-5", "--run", "nn1",
+        "--pins", str(pins_path), "--state", str(state_dir), "--no-git",
+    ])
+    assert rc == 0

@@ -10,7 +10,7 @@ pinned id in a registry file, never a floating "latest" alias.
 | step | command | what it does |
 |---|---|---|
 | 1 | `pinbench watch` | Diffs each vendor's catalog against the last snapshot and names a newer id in any slot you use. Calls no model. |
-| 2 | `pinbench run` | Sends a frozen suite of your own inputs through incumbent and candidate. Refuses to start over your cost cap; stops if spend reaches it. |
+| 2 | `pinbench run` | Sends a frozen suite of your own inputs through incumbent and candidate. Refuses to start over your cost cap; stops if spend reaches it. Add `--batch` to send Anthropic arms as one Message Batch at the batch discount (minutes to hours, no mid-run stop). |
 | 3 | `pinbench vote` | Builds a blind A/B page. You judge outputs without knowing which model wrote which. |
 | 4 | `pinbench report` | Unblinds the votes, scores against any labels, prints RECOMMEND / HOLD with the rule it applied. |
 | 5 | `pinbench bump` | Changes the pin only on a RECOMMEND for that exact pair, committed on a branch as a reviewable diff. |
@@ -42,6 +42,7 @@ pip install -e ".[dev]"
 export ANTHROPIC_API_KEY=sk-ant-...
 pinbench plan examples/suites/summaries.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.25
 pinbench run examples/suites/summaries.yaml --incumbent claude-sonnet-5-5 --candidate claude-haiku-5-5 --cap 0.25 --name demo
+# or, at half the price with no mid-run stop: pinbench run ... --batch
 pinbench vote demo --open
 pinbench report demo --votes ~/Downloads/votes.json
 ```

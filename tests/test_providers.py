@@ -177,6 +177,20 @@ def test_openai_empty_content_is_a_failure(monkeypatch):
     assert reply.stop_reason == "length"
 
 
+def test_network_guard_covers_batch_endpoints(monkeypatch):
+    """Each of the four batch functions (create/retrieve/results/cancel) must refuse to open
+    a socket under PINBENCH_NO_NETWORK=1, exactly like the sync `call` does."""
+    monkeypatch.setenv("PINBENCH_NO_NETWORK", "1")
+    with pytest.raises(anthropic_provider.NoNetwork):
+        anthropic_provider.create_batch([{"custom_id": "x", "params": {}}], "key")
+    with pytest.raises(anthropic_provider.NoNetwork):
+        anthropic_provider.get_batch("msgbatch_x", "key")
+    with pytest.raises(anthropic_provider.NoNetwork):
+        anthropic_provider.fetch_results("msgbatch_x", "key")
+    with pytest.raises(anthropic_provider.NoNetwork):
+        anthropic_provider.cancel_batch("msgbatch_x", "key")
+
+
 def test_anthropic_http_error_becomes_reply_error(monkeypatch):
     import io
     import urllib.error

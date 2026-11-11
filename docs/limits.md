@@ -35,3 +35,15 @@ What pinbench does not do, and the model-specific behavior it leaves to the regi
 - No confidence intervals, inter-rater agreement, or rotating reviewers; no hosted voting; no
   chat or email notifications, scheduler, or daemon (`watch` is a one-shot you cron); no
   automatic PR creation or rollback tooling; no reasoning-effort normalization across models.
+- `--batch` (Anthropic's Message Batches API) is Anthropic-only: a non-Anthropic id among
+  incumbent/candidate/judge refuses the whole run rather than batching some arms and calling
+  others. It cannot be stopped request by request once submitted -- the whole batch is one
+  request -- so the cost cap gates submission only; an over-run discovered after results come
+  back is recorded (`run.json`'s `batch.cap_exceeded_after_results`) and warned about loudly,
+  never prevented after the fact. `latency_ms` is always `null` on a batch item: there is no
+  meaningful per-call timing to record. Most batches finish in under an hour; a batch can take up to 24 hours before it
+  `expired`s, so the default `--max-wait` is 86400 seconds (riding to that expiry rather than
+  failing fast and leaving a half-finished wait to re-fetch by hand). Results are kept 29 days.
+  There is no `--resume-batch`: if `--max-wait` or Ctrl-C ends `run --batch` early, the batch
+  itself is left running (never canceled) and its ids are on disk in `batch.json`, but
+  re-running the same command re-submits the work from scratch (and pays again).
