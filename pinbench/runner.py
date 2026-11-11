@@ -17,6 +17,7 @@ from typing import Optional
 
 from . import cost as cost_mod
 from . import judge as judge_mod
+from . import prices as prices_mod
 from . import providers
 from . import suite as suite_mod
 
@@ -41,6 +42,7 @@ class PlanResult:
     cap_usd: Optional[float]
     within_cap: Optional[bool]
     judge_id: Optional[str] = None
+    batch: bool = False
 
 
 def _require_price_and_route(model_id, prices):
@@ -59,7 +61,39 @@ def _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge):
         )
 
 
-def plan(suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None, allow_self_judge=False) -> PlanResult:
+def _check_batch_provider(incumbent_id, candidate_id, judge_id):
+    """--batch is Anthropic-only: a mixed run (some arms batched, some not) is never half-
+    batched, so ANY non-Anthropic id among incumbent/candidate/judge refuses the whole run
+    before anything is sent."""
+    for label, model_id in (("incumbent", incumbent_id), ("candidate", candidate_id), ("judge", judge_id)):
+        if model_id is None:
+            continue
+        if providers.provider_for_id(model_id) != "anthropic":
+            raise PlanRefused(
+                f"--batch is Anthropic-only; '{model_id}' ({label}) cannot be batched; "
+                "a mixed run is never half-batched"
+            )
+
+
+def _batch_prices(prices, *model_ids) -> "prices_mod.Prices":
+    """A copy of `prices` with each of `model_ids` (None entries skipped) replaced by its
+    `.at_batch()` discounted row. A row with no batch_multiplier turns PricesError into
+    PlanRefused -- same refusal class as every other pre-spend check."""
+    rows = dict(prices.rows)
+    for model_id in model_ids:
+        if model_id is None:
+            continue
+        try:
+            rows[model_id] = rows[model_id].at_batch()
+        except prices_mod.PricesError as exc:
+            raise PlanRefused(str(exc)) from exc
+    return prices_mod.Prices(version=prices.version, checked=prices.checked, rows=rows)
+
+
+def plan(
+    suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None,
+    allow_self_judge=False, batch=False,
+) -> PlanResult:
     judge_id = suite.judge.model if suite.judge else None
     try:
         _require_price_and_route(incumbent_id, prices)
@@ -68,11 +102,17 @@ def plan(suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, st
             _require_price_and_route(judge_id, prices)
     except providers.NoAdapterError as exc:
         raise PlanRefused(str(exc)) from exc
+    if batch:
+        _check_batch_provider(incumbent_id, candidate_id, judge_id)
     _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge)
 
-    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, prices, limit=limit, state_dir=state_dir, judge_id=judge_id)
+    estimate_prices = _batch_prices(prices, incumbent_id, candidate_id, judge_id) if batch else prices
+    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, estimate_prices, limit=limit, state_dir=state_dir, judge_id=judge_id)
     within_cap = None if cap_usd is None else estimate.total_usd <= cap_usd
-    return PlanResult(incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd, within_cap=within_cap, judge_id=judge_id)
+    return PlanResult(
+        incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd,
+        within_cap=within_cap, judge_id=judge_id, batch=batch,
+    )
 
 
 def _check_api_keys(*model_ids):
@@ -182,6 +222,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
 def run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
+    batch=False, poll_interval_s=30, max_wait_s=86400,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -190,17 +231,36 @@ def run(
     in run.json so `pinbench report` can reload this exact suite later (judge/policy
     fallbacks included) even if pinbench.yaml has since changed, and so the report header
     can name which config file, if any, this run used.
+
+    `batch=True` sends every Anthropic arm (and the judge, if any) as a Message Batch at the
+    batch discount instead of one call per item -- see `batch.run_batch`. The pre-spend
+    checks (cap, price/route, self-judge, plus the Anthropic-only check) are identical; only
+    how the calls are made and metered differs.
     """
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
-    plan_result = plan(suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir, allow_self_judge=allow_self_judge)
+    plan_result = plan(
+        suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir,
+        allow_self_judge=allow_self_judge, batch=batch,
+    )
     if not plan_result.within_cap:
         raise RunCapExceeded(
             f"estimate ${plan_result.estimate.total_usd:.4f} exceeds cap ${cap_usd:.4f}",
             plan_result.estimate,
         )
     _check_api_keys(incumbent_id, candidate_id, plan_result.judge_id)
+
+    if batch:
+        from . import batch as batch_mod  # local import: batch.py imports this module at load time
+
+        record = batch_mod.run_batch(
+            suite, incumbent_id, candidate_id, prices, plan_result, cap_usd, limit, name, state_dir, suite_path,
+            poll_interval_s=poll_interval_s, max_wait_s=max_wait_s,
+        )
+        record["effective_config"] = effective_config
+        _write_run_json(state_dir, record["run_name"], record)
+        return record
 
     inc_price = prices.rows[incumbent_id]
     cand_price = prices.rows[candidate_id]

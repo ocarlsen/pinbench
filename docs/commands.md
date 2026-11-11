@@ -5,8 +5,8 @@ Every `pinbench` subcommand, its flags, exit codes, and what each command refuse
 | command | what it does |
 |---|---|
 | `pinbench pins` | print the registry as a table |
-| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | estimate cost, no spend |
-| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge]` | run both arms (and the judge, if any), write run.json |
+| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch]` | estimate cost, no spend |
+| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch] [--poll-interval SECONDS] [--max-wait SECONDS]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff the catalog of each provider `pins.yaml` uses against the last snapshot |
@@ -23,6 +23,9 @@ Other flags:
 | flag | on | what it does |
 |---|---|---|
 | `--limit N` | `plan`, `run` | use only the first N items of the suite, for both the estimate and the run; `items_total` in `run.json` is then N |
+| `--batch` | `plan`, `run` | send every Anthropic arm (and the judge, if any) as one Message Batch at the batch discount instead of one call per item. Anthropic-only: any non-Anthropic id among incumbent/candidate/judge refuses the whole run before anything is sent. `plan --batch` prints the discounted rate per arm/judge with a `batch_multiplier` line from `prices.yaml` |
+| `--poll-interval SECONDS` | `run` (`--batch` only) | seconds between batch status polls; default 30 |
+| `--max-wait SECONDS` | `run` (`--batch` only) | seconds to wait for a batch to reach `ended` before giving up; default 86400 (24h, the vendor's own expiry). Giving up never cancels the batch -- it is left running, and the same command re-run re-submits (and pays again) |
 | `--format text\|md\|json` | `report` | the format printed to stdout (default `text`); the run's `report.md` is always written in Markdown regardless |
 | `--no-git` | `bump` | edit the pins file and stop: no branch, no commit |
 | `--force REASON` | `bump` | skip the RECOMMEND gate; the reason is written into the commit message as `(forced: REASON, run RUN_NAME)` |
@@ -51,6 +54,7 @@ Exit codes:
 | 2 | refusal before any spend |
 | 3 | the cost cap was exceeded |
 | 4 | a `run` where one arm got zero successes |
+| 130 | `run --batch` interrupted (Ctrl-C) while waiting on a batch; the batch is left running |
 
 Refusals and warnings:
 
@@ -68,3 +72,11 @@ Refusals and warnings:
 - `report` folds any per-arm error, or more than `policy.max_truncated` (default 0) truncated
   outputs on either arm, into an INCOMPLETE verdict. A 4xx error before the model generated
   anything costs $0 in `run.json`, never the pre-run estimate.
+- With `--batch` the cap is enforced before submission only: a Message Batch is one request
+  for every item, so there is no per-call point left to stop mid-run. If actual spend still
+  ends up over the cap once results come back (the pre-run estimate is a ceiling, not every
+  real call), `run.json`'s `batch.cap_exceeded_after_results` is set and `run` prints a loud
+  warning, but the exit code is unchanged -- the money is already spent, and nothing remains
+  to stop. A model with no `batch_multiplier` in `prices.yaml` refuses the same way an unpriced
+  model does (exit 2), and any non-Anthropic id among incumbent/candidate/judge refuses the
+  whole run (exit 2) before anything is sent -- `--batch` is Anthropic-only, never half-batched.

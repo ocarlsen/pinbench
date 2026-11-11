@@ -64,7 +64,7 @@ def cmd_plan(args):
     try:
         result = runner_mod.plan(
             suite, args.incumbent, args.candidate, prices, cap_usd=cap_usd, limit=args.limit,
-            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge,
+            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge, batch=args.batch,
         )
     except runner_mod.PlanRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -72,17 +72,25 @@ def cmd_plan(args):
 
     for label, arm in (("incumbent", result.estimate.incumbent), ("candidate", result.estimate.candidate)):
         price = prices.rows[arm.model_id]
-        print(
+        disp_price = price.at_batch() if args.batch else price
+        line = (
             f"{label:<9} {arm.model_id:<24} {len(arm.items):>3} items  est ${arm.cost_usd:.4f}  "
-            f"(${price.input:.2f}/${price.output:.2f} per Mtok)"
+            f"(${disp_price.input:.2f}/${disp_price.output:.2f} per Mtok)"
         )
+        if args.batch:
+            line += f"  [batch]  batch_multiplier {price.batch_multiplier} (prices.yaml)"
+        print(line)
     if result.estimate.judge is not None:
         judge_price = prices.rows[result.judge_id]
+        judge_disp_price = judge_price.at_batch() if args.batch else judge_price
         judge_calls = len(result.estimate.judge.items)
-        print(
+        line = (
             f"{'judge':<9} {result.judge_id:<24} {judge_calls:>3} calls  est ${result.estimate.judge.cost_usd:.4f}  "
-            f"(${judge_price.input:.2f}/${judge_price.output:.2f} per Mtok)"
+            f"(${judge_disp_price.input:.2f}/${judge_disp_price.output:.2f} per Mtok)"
         )
+        if args.batch:
+            line += f"  [batch]  batch_multiplier {judge_price.batch_multiplier} (prices.yaml)"
+        print(line)
     total = result.estimate.total_usd
     if cap_usd is None:
         print(f"total est ${total:.4f}  (no cap given)")
@@ -119,6 +127,9 @@ def cmd_run(args):
             suite_path=args.suite,
             allow_self_judge=args.allow_self_judge,
             effective_config=effective,
+            batch=args.batch,
+            poll_interval_s=args.poll_interval,
+            max_wait_s=args.max_wait,
         )
     except runner_mod.RunCapExceeded as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -312,6 +323,10 @@ def _add_arm_args(p):
     p.add_argument("--prices", default=None)
     p.add_argument("--state", default=None)
     p.add_argument("--allow-self-judge", action="store_true", help="allow the suite's judge model to also be an arm")
+    p.add_argument(
+        "--batch", action="store_true",
+        help="send every Anthropic arm (and judge, if any) as one Message Batch at the batch discount; Anthropic-only",
+    )
     _add_config_arg(p)
 
 
@@ -331,6 +346,8 @@ def build_parser():
     p_run = sub.add_parser("run", help="run both arms over a suite")
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None)
+    p_run.add_argument("--poll-interval", type=int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch only)")
+    p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch only)")
     p_run.set_defaults(func=cmd_run)
 
     p_vote = sub.add_parser("vote", help="build the blind A/B vote page")
@@ -381,6 +398,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+    except KeyboardInterrupt:
+        # A batch left running during `run --batch` prints its own ids/cancel-instructions
+        # (pinbench.batch.run_batch) before this unwinds; nothing further to say here.
+        return 130
     except Exception as exc:  # noqa: BLE001 - last-resort: report, never a bare traceback
         print(f"error: {exc}", file=sys.stderr)
         return 1

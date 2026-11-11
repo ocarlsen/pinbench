@@ -23,11 +23,25 @@ import urllib.error
 import urllib.request
 
 API_BASE = "https://api.anthropic.com"
+# CONFIRMED (platform.claude.com/docs/en/build-with-claude/batch-processing, read 2026-11-10):
+# the single-call Messages endpoint accepts anthropic-version: 2023-06-01 (used below since
+# pinbench's first release). UNCONFIRMED for the batch endpoints (create/retrieve/results/
+# cancel): every curl example on that page uses "anthropic-version: 2026-10-21"; the page
+# never states whether 2023-06-01 is also accepted there, and pinbench cannot call the real
+# API to check (PINBENCH_NO_NETWORK=1 in every test/offline run). The batch functions below
+# reuse this same constant on the stated assumption that the version header is global, not
+# per-endpoint; if a live smoke 400s on it, bump this constant (or split a
+# BATCH_ANTHROPIC_VERSION) in a one-line follow-up PR -- do not silently swallow that 400.
 ANTHROPIC_VERSION = "2023-06-01"
+BATCHES_PATH = "/v1/messages/batches"
 
 
 class NoNetwork(RuntimeError):
     pass
+
+
+class BatchError(RuntimeError):
+    """Raised on a non-2xx response from a batch endpoint (create/retrieve/results/cancel)."""
 
 
 def _guard_network():
@@ -35,13 +49,12 @@ def _guard_network():
         raise NoNetwork("PINBENCH_NO_NETWORK=1: refusing to open a socket")
 
 
-def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):
-    from . import Reply
-
-    _guard_network()
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY is not set")
-
+def build_params(model_id, system, user_input, max_tokens, params=None) -> dict:
+    """The Messages API request body for one call -- the exact dict `call()` sends, and the
+    exact dict a batch request's "params" carries (see `batch.build_arm_requests` /
+    `judge.judge_request_params`). The one place this body is assembled, so the sync and
+    batch paths can never drift apart on it.
+    """
     params = params or {}
     body = {
         "model": model_id,
@@ -53,33 +66,19 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
     # merges the model's own request_defaults (prices.yaml) with the suite's params before
     # calling this function, so whatever lands in `params` is sent verbatim.
     body.update(params)
+    return body
 
-    req = urllib.request.Request(
-        f"{API_BASE}/v1/messages",
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "content-type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION,
-        },
-    )
 
-    started = time.monotonic()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        latency_ms = int((time.monotonic() - started) * 1000)
-        detail = exc.read().decode("utf-8", errors="replace")
-        return Reply(
-            output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms,
-            error=f"HTTP {exc.code}: {detail[:200]}", status_code=exc.code,
-        )
-    except urllib.error.URLError as exc:
-        latency_ms = int((time.monotonic() - started) * 1000)
-        return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=str(exc))
-    latency_ms = int((time.monotonic() - started) * 1000)
+def _reply_from_message(data, latency_ms):
+    """Parse a Messages API response body into a Reply. `data` is the full Message object:
+    the top-level response to a sync call, or `result["message"]` from one `succeeded`
+    batch result line (CONFIRMED same shape, platform.claude.com/docs/en/build-with-claude/
+    batch-processing, read 2026-11-10 -- the doc's own example line is
+    `{"custom_id":...,"result":{"type":"succeeded","message":{"id":...,"content":[...],
+    "stop_reason":...,"usage":{...}}}}`). `latency_ms` is the caller's measured wall time,
+    or None when there is no meaningful per-call latency (every batch reply).
+    """
+    from . import Reply
 
     content = data.get("content", [])
     text_parts = [block.get("text", "") for block in content if block.get("type") == "text"]
@@ -106,6 +105,185 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
         error=None,
         stop_reason=stop_reason,
     )
+
+
+def _batch_error_detail(result: dict) -> str:
+    """A short human-readable string for an errored/canceled/expired batch result line.
+
+    CONFIRMED (same doc, "If your result has an error, its result.error will be set to the
+    standard error shape", and the SDK samples' `result.result.error.error.type`): an
+    `errored` result's `error` field is `{"type": "error", "error": {"type": "...",
+    "message": "..."}}` -- the same nested envelope a synchronous HTTP error body uses.
+    `canceled`/`expired` carry no `error` field at all (the vendor table: "User canceled...",
+    "Batch reached its 24-hour expiration..."), so those fall back to the bare type.
+    """
+    err = result.get("error")
+    if isinstance(err, dict):
+        inner = err.get("error")
+        if isinstance(inner, dict):
+            return f"{inner.get('type', 'unknown')}: {inner.get('message', '')}"
+        return json.dumps(err)
+    return str(result.get("type", "unknown"))
+
+
+def reply_from_batch_result(line: dict):
+    """One parsed JSONL result line (`{"custom_id": ..., "result": {"type": ...}}`) -> Reply.
+
+    `succeeded` reuses `_reply_from_message` on `result["message"]` with latency_ms=None (no
+    per-call timing exists in a batch). `errored`/`canceled`/`expired` become an arm error
+    with status_code=400 so cost.actual_call_cost charges $0 -- the vendor's own words: "You
+    will not be billed for these requests." Any other `result.type` is unconfirmed shape and
+    fails loudly (BatchError) rather than guessing.
+    """
+    from . import Reply
+
+    result = line.get("result") or {}
+    rtype = result.get("type")
+    if rtype == "succeeded":
+        message = result.get("message")
+        if not isinstance(message, dict):
+            raise BatchError(
+                f"batch result {line.get('custom_id')!r}: type 'succeeded' with no 'message' object "
+                f"(unconfirmed shape, refusing to guess): {result!r}"
+            )
+        return _reply_from_message(message, latency_ms=None)
+    if rtype in ("errored", "canceled", "expired"):
+        detail = _batch_error_detail(result)
+        return Reply(
+            output=None, input_tokens=None, output_tokens=None, latency_ms=None,
+            error=f"batch {rtype}: {detail[:200]}", status_code=400,
+        )
+    raise BatchError(f"batch result {line.get('custom_id')!r}: unknown result type {rtype!r} (refusing to guess)")
+
+
+def _batch_headers(api_key):
+    return {"content-type": "application/json", "x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+
+
+def _open_batch_request(req, timeout, action):
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise BatchError(f"{action} HTTP {exc.code}: {detail[:200]}") from exc
+    except urllib.error.URLError as exc:
+        raise BatchError(f"{action}: {exc}") from exc
+
+
+def create_batch(requests, api_key, timeout=60) -> dict:
+    """POST /v1/messages/batches with {"requests": [{"custom_id", "params"}, ...]}.
+
+    Returns the created Message Batch object (id, processing_status, request_counts, ...).
+    Raises BatchError on any non-2xx response.
+    """
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+    body = {"requests": requests}
+    req = urllib.request.Request(
+        f"{API_BASE}{BATCHES_PATH}",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers=_batch_headers(api_key),
+    )
+    return _open_batch_request(req, timeout, "create_batch")
+
+
+def get_batch(batch_id, api_key, timeout=30) -> dict:
+    """GET /v1/messages/batches/{id}: the current Message Batch object."""
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+    req = urllib.request.Request(
+        f"{API_BASE}{BATCHES_PATH}/{batch_id}",
+        method="GET",
+        headers=_batch_headers(api_key),
+    )
+    return _open_batch_request(req, timeout, "get_batch")
+
+
+def fetch_results(batch_id, api_key, timeout=120) -> list:
+    """GET /v1/messages/batches/{id}/results: the JSONL results file, split into one parsed
+    dict per non-blank line. Blank lines are skipped; a line that is not valid JSON raises
+    (json.JSONDecodeError), never silently dropped.
+    """
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+    req = urllib.request.Request(
+        f"{API_BASE}{BATCHES_PATH}/{batch_id}/results",
+        method="GET",
+        headers=_batch_headers(api_key),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise BatchError(f"fetch_results HTTP {exc.code}: {detail[:200]}") from exc
+    except urllib.error.URLError as exc:
+        raise BatchError(f"fetch_results: {exc}") from exc
+    results = []
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        results.append(json.loads(line))
+    return results
+
+
+def cancel_batch(batch_id, api_key, timeout=30) -> dict:
+    """POST /v1/messages/batches/{id}/cancel."""
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+    req = urllib.request.Request(
+        f"{API_BASE}{BATCHES_PATH}/{batch_id}/cancel",
+        data=b"",
+        method="POST",
+        headers=_batch_headers(api_key),
+    )
+    return _open_batch_request(req, timeout, "cancel_batch")
+
+
+def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+
+    body = build_params(model_id, system, user_input, max_tokens, params)
+
+    req = urllib.request.Request(
+        f"{API_BASE}/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+        },
+    )
+
+    from . import Reply
+
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        detail = exc.read().decode("utf-8", errors="replace")
+        return Reply(
+            output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms,
+            error=f"HTTP {exc.code}: {detail[:200]}", status_code=exc.code,
+        )
+    except urllib.error.URLError as exc:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=latency_ms, error=str(exc))
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    return _reply_from_message(data, latency_ms)
 
 
 def list_models(api_key, timeout=20):

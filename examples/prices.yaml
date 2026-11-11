@@ -11,6 +11,9 @@ models:
     # \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": \"disabled\"}."
     request_defaults:
       thinking: {type: between_tools}
+    # Message Batches API: "a 50 percent discount on both input and output tokens"
+    # (platform.claude.com/docs/en/about-claude/pricing, "Batch processing"; read 2026-11-10).
+    batch_multiplier: 0.5
   gpt-5-mini:
     input: 0.25
     output: 2.00
@@ -35,6 +38,9 @@ models:
     # Anthropic adapter's docstring and the README's live-run notes describe for arms.
     # `output_config: {effort: low}` would be the lever to shrink that spend, but it is a
     # policy choice, not per-model truth, so it does not live in this row.
+    # Message Batches API: "a 50 percent discount on both input and output tokens"
+    # (platform.claude.com/docs/en/about-claude/pricing, "Batch processing"; read 2026-11-10).
+    batch_multiplier: 0.5
   claude-haiku-5-5:
     # Base tier (prompts <= 100,000 tokens); the API bills this rate for suites like
     # examples/suites/*.yaml, which are far under that threshold. The overview page's
@@ -48,6 +54,9 @@ models:
     # the pricing/models pages above, so this is an observation, not a cited doc).
     request_defaults:
       thinking: {type: disabled}
+    # Message Batches API: "a 50 percent discount on both input and output tokens"
+    # (platform.claude.com/docs/en/about-claude/pricing, "Batch processing"; read 2026-11-10).
+    batch_multiplier: 0.5
   gemini-4-argon:
     # Introductory standard-tier rate, "through November 30, 2026"; the same page lists
     # $4.00 input / $20.00 output "starting December 1, 2026". Update this row on Dec 1:

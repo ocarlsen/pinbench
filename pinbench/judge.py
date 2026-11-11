@@ -135,29 +135,47 @@ def parse_response(raw_text: Optional[str], valid_ids) -> JudgeOutcome:
     return JudgeOutcome(hit=sorted(set(hit)), extra=extra, notes=notes)
 
 
-def judge_output(judge_id, item, suite, output_text, api_key, params=None):
-    """Call the fixed judge model on exactly one output. Returns (JudgeOutcome, Reply).
+def interpret_reply(reply, item, suite) -> JudgeOutcome:
+    """The parsing half of `judge_output`, split out so a batch judge result (which never
+    makes the call itself -- it already has a Reply from `anthropic.reply_from_batch_result`)
+    can go through the exact same error/truncation/strict-parse rules as a sync judge call.
 
     A transport/HTTP error on the call itself is a judge error (reply.error), never a
     malformed-JSON error -- the two are kept distinct in JudgeOutcome.error's text so a
     report can tell "the judge broke" from "the judge answered badly".
     """
-    system, user = build_messages(item, suite, output_text)
-    adapter = providers.route(judge_id)
-    reply = adapter.call(judge_id, system, user, suite.judge.max_output_tokens, api_key, params=params)
     if reply.error is not None:
-        return JudgeOutcome(hit=[], extra=0, notes="", error=reply.error), reply
+        return JudgeOutcome(hit=[], extra=0, notes="", error=reply.error)
     if reply.stop_reason in scoring_mod.TRUNCATION_STOP_REASONS:
         # A cut-off reply is never parsed, even if the fragment happens to be valid JSON:
         # the judge did not finish, so whatever it wrote is not its answer.
         err = f"judge output truncated at max_output_tokens={suite.judge.max_output_tokens} (stop_reason={reply.stop_reason!r})"
-        return JudgeOutcome(hit=[], extra=0, notes="", error=err), reply
+        return JudgeOutcome(hit=[], extra=0, notes="", error=err)
     valid_ids = [p.id for p in item.rubric_points]
     try:
         outcome = parse_response(reply.output, valid_ids)
     except JudgeParseError as exc:
-        return JudgeOutcome(hit=[], extra=0, notes="", error=f"malformed judge JSON: {exc}"), reply
-    return outcome, reply
+        return JudgeOutcome(hit=[], extra=0, notes="", error=f"malformed judge JSON: {exc}")
+    return outcome
+
+
+def judge_output(judge_id, item, suite, output_text, api_key, params=None):
+    """Call the fixed judge model on exactly one output. Returns (JudgeOutcome, Reply)."""
+    system, user = build_messages(item, suite, output_text)
+    adapter = providers.route(judge_id)
+    reply = adapter.call(judge_id, system, user, suite.judge.max_output_tokens, api_key, params=params)
+    return interpret_reply(reply, item, suite), reply
+
+
+def judge_request_params(judge_id, item, suite, output_text, judge_price) -> dict:
+    """The batch request body for one judge call -- same messages `judge_output` would send,
+    built through `anthropic.build_params` so a batch judge request and a sync judge call
+    are byte-identical. Anthropic-only (batch mode refuses a non-Anthropic judge before this
+    is ever called; see runner.plan's Anthropic-only check)."""
+    from .providers import anthropic as anthropic_mod
+
+    system, user = build_messages(item, suite, output_text)
+    return anthropic_mod.build_params(judge_id, system, user, suite.judge.max_output_tokens, judge_price.request_defaults)
 
 
 def _outcome_record(outcome: JudgeOutcome, cost_usd: Optional[float]) -> dict:
