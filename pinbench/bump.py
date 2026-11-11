@@ -92,10 +92,20 @@ def bump(pins_path, slot_name, to_id, run_name, state_dir=".pinbench", no_git=Fa
         registry_mod.set_model(pins_path, slot_name, to_id)
         return BumpResult(branch=None, committed=False, message=message)
 
-    repo_dir = repo_dir or Path(pins_path).resolve().parent
+    pins_abs = Path(pins_path).resolve()
+    if repo_dir is None:
+        # The pins file need not sit at the repo root (the default is examples/pins.yaml), so
+        # ask git for the top level from the file's own directory.
+        try:
+            top = _git(pins_abs.parent, "rev-parse", "--show-toplevel").stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            raise BumpRefused(f"{pins_abs} is not inside a git repository: {exc.stderr.strip()}") from exc
+        repo_dir = Path(top)
+    repo_dir = Path(repo_dir).resolve()
     branch = f"bump/{slot_name}-{to_id}"
-    report_rel = str(Path(state_dir) / "runs" / run_name / "report.md")
-    pins_rel = str(Path(pins_path).resolve().relative_to(Path(repo_dir).resolve()))
+    # Absolute paths: git resolves them against the work tree, whatever the cwd is.
+    report_rel = str((Path(state_dir) / "runs" / run_name / "report.md").resolve())
+    pins_rel = str(pins_abs)
     original_branch = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     original_pins = Path(pins_path).read_bytes()
 

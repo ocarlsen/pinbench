@@ -90,6 +90,9 @@ def wait_for_batch(get_batch_fn, batch_id, poll_interval_s, max_wait_s, sleep_fn
     until `processing_status == "ended"`. Prints one progress line per poll. Raises
     MaxWaitExceeded, never cancels, past `max_wait_s` elapsed. Returns (batch_obj, polls).
     """
+    if poll_interval_s < 1:
+        # elapsed advances by the interval; a zero or negative one never reaches max_wait_s.
+        raise ValueError(f"poll interval must be at least 1 second, got {poll_interval_s}")
     elapsed = 0
     polls = 0
     while True:
@@ -178,6 +181,10 @@ def run_batch(
     from . import runner as runner_mod
     from .providers import anthropic as anthropic_mod
 
+    if poll_interval_s < 1:
+        # Refuse before any spend: the wait loop runs only after the batch is submitted.
+        raise ValueError(f"poll interval must be at least 1 second, got {poll_interval_s}")
+
     sleep_fn = sleep_fn or time.sleep
     print_fn = print_fn or print
 
@@ -188,7 +195,7 @@ def run_batch(
     judge_id = plan_result.judge_id
     judge_price = prices.rows[judge_id].at_batch() if judge_id is not None else None
 
-    items = suite.items[:limit] if limit else suite.items
+    items = suite.items[:limit] if limit is not None else suite.items
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
     run_dir = Path(state_dir) / "runs" / run_name

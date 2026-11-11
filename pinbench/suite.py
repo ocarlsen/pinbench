@@ -180,6 +180,9 @@ def _parse_policy(raw, defaults: Optional[dict] = None) -> Policy:
     module's own built-in literals -- identical to pre-config behavior."""
     base = defaults if defaults is not None else config_mod.BUILTIN_DEFAULTS["policy"]
     policy_raw = raw.get("policy", {}) or {}
+    if not isinstance(policy_raw, dict):
+        raise config_mod.ConfigError("policy must be a mapping")
+    config_mod._validate_policy(policy_raw)
     return Policy(
         min_items=policy_raw.get("min_items", base["min_items"]),
         label_tolerance_points=policy_raw.get("label_tolerance_points", base["label_tolerance_points"]),

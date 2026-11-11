@@ -56,7 +56,7 @@ Your app reads its model id from the pins file, so merging a bump PR is what swi
 ```python
 import pinbench
 
-model = pinbench.pin("summarizer")  # reads ./pins.yaml; pass a path as the second argument
+model = pinbench.pin("summarizer", "examples/pins.yaml")  # the second argument is the pins file (default ./pins.yaml)
 ```
 
 A third example suite, `examples/suites/review.yaml`, skips the vote page and scores with a

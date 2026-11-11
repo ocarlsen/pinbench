@@ -443,3 +443,25 @@ def test_summaries_facts_example_matches_summaries_inputs():
     assert [(i.id, i.input) for i in facts.items] == [(i.id, i.input) for i in votes.items]
     assert facts.scoring.labels == "judge"
     assert all(len(i.rubric_points) == 3 for i in facts.items)
+
+
+def test_suite_level_policy_is_validated(tmp_path):
+    from pinbench import config
+
+    path = _write(
+        tmp_path,
+        """\
+version: 1
+name: demo
+task: "Answer briefly."
+max_output_tokens: 32
+policy:
+  min_items: 0
+items:
+  - id: a1
+    input: "hi"
+    expect: "hello"
+""",
+    )
+    with pytest.raises(config.ConfigError):
+        suite.load(path)

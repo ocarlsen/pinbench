@@ -188,3 +188,11 @@ def test_estimate_run_without_judge_id_has_no_judge_estimate(tmp_path):
     est = cost.estimate_run(s, "incumbent", "candidate", p)
     assert est.judge is None
     assert est.total_usd == est.incumbent.cost_usd + est.candidate.cost_usd
+
+
+def test_estimate_limit_zero_is_zero_items_not_unlimited(tmp_path):
+    s = _suite(tmp_path, n=3)
+    p = _prices(tmp_path)
+    inc_row = next(iter(p.rows.values()))
+    assert cost.estimate_arm(s, "claude-sonnet-4-5", inc_row, limit=0).cost_usd == 0.0
+    assert cost.estimate_arm(s, "claude-sonnet-4-5", inc_row).cost_usd > 0.0

@@ -112,7 +112,10 @@ def set_model(path, slot_name: str, new_id: str) -> None:
     old_provider = before.slots[slot_name].provider
 
     lines = path.read_text().splitlines(keepends=True)
-    slot_header = re.compile(rf"^  {re.escape(slot_name)}:\s*$")
+    # The slot header's indent is whatever the file uses (2, 4, ...); a slot ends at the next
+    # non-blank, non-comment line indented no deeper than its header.
+    slot_header = re.compile(rf"^( +){re.escape(slot_name)}:\s*$")
+    header_indent = 0
     model_line = re.compile(r"^(\s+model:\s*)(\S+)(.*)$")
     provider_line = re.compile(r"^(\s+provider:\s*)(\S+)(.*)$")
 
@@ -121,12 +124,14 @@ def set_model(path, slot_name: str, new_id: str) -> None:
     provider_edited = new_provider == old_provider
     out = []
     for line in lines:
-        if slot_header.match(line.rstrip("\n")):
+        header = slot_header.match(line.rstrip("\n"))
+        if header:
             in_slot = True
+            header_indent = len(header.group(1))
             out.append(line)
             continue
-        if in_slot and re.match(r"^  \S", line):
-            # a new top-level slot started; stop looking
+        if in_slot and line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip(" ")) <= header_indent:
+            # a sibling slot (or a dedent) started; stop looking
             in_slot = False
         if in_slot and not edited:
             m = model_line.match(line)

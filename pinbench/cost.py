@@ -83,7 +83,7 @@ def estimate_arm(suite, model_id: str, price, limit=None, state_dir=None, suite_
     if price is None:
         raise ValueError(f"no price row for {model_id}")
 
-    items = suite.items[:limit] if limit else suite.items
+    items = suite.items[:limit] if limit is not None else suite.items
     prior = _prior_measured_input_tokens(state_dir, suite_hash, model_id) if suite_hash else {}
 
     estimates = []
@@ -141,7 +141,7 @@ def estimate_judge_run(suite, judge_id, price, limit=None) -> ArmEstimate:
     """Estimate every judge call a run would make: two per item (one per arm's output)."""
     if price is None:
         raise ValueError(f"no price row for {judge_id}")
-    items = suite.items[:limit] if limit else suite.items
+    items = suite.items[:limit] if limit is not None else suite.items
     estimates = []
     total = 0.0
     for item in items:

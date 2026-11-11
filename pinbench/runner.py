@@ -182,43 +182,55 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
     inc_stats = _ArmStats()
     cand_stats = _ArmStats()
 
+    unexpected = None
     for item in items:
-        if not meter.check(inc_estimates[item.id]):
-            stopped_early = True
-            break
-        inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys)
-        inc_stats.record(inc_reply)
-        inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
-        spent_incumbent += inc_cost
-
-        if not meter.check(cand_estimates[item.id]):
-            stopped_early = True
-            result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
-            break
-        cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys)
-        cand_stats.record(cand_reply)
-        cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
-        spent_candidate += cand_cost
-
-        judge_record = None
-        if judge_ctx is not None:
-            # Both arms are handed to the judge stage regardless of whether either errored
-            # or was cut off -- judge.run_judge_stage (via judge.skip_reason) decides per arm
-            # whether to actually call the judge or just record "skipped", never the caller.
-            judge_record, judge_stopped = judge_mod.run_judge_stage(
-                meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
-                {"incumbent": inc_reply, "candidate": cand_reply},
-            )
-            spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
-            if judge_stopped:
+        inc_reply = inc_cost = cand_reply = cand_cost = None
+        try:
+            if not meter.check(inc_estimates[item.id]):
                 stopped_early = True
+                break
+            inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys)
+            inc_stats.record(inc_reply)
+            inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
+            spent_incumbent += inc_cost
 
-        result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record))
-        if judge_ctx is not None and stopped_early:
+            if not meter.check(cand_estimates[item.id]):
+                stopped_early = True
+                result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
+                break
+            cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys)
+            cand_stats.record(cand_reply)
+            cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
+            spent_candidate += cand_cost
+
+            judge_record = None
+            if judge_ctx is not None:
+                # Both arms are handed to the judge stage regardless of whether either errored
+                # or was cut off -- judge.run_judge_stage (via judge.skip_reason) decides per arm
+                # whether to actually call the judge or just record "skipped", never the caller.
+                judge_record, judge_stopped = judge_mod.run_judge_stage(
+                    meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
+                    {"incumbent": inc_reply, "candidate": cand_reply},
+                )
+                spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
+                if judge_stopped:
+                    stopped_early = True
+
+            result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record))
+            if judge_ctx is not None and stopped_early:
+                break
+        except Exception as exc:  # noqa: BLE001 - keep every paid output, then re-raise from run()
+            # Anything the adapters did not turn into a Reply error (a bug, an odd exception)
+            # must not lose outputs already paid for: keep this item's collected half, stop,
+            # and let run() write run.json before re-raising.
+            unexpected = exc
+            stopped_early = True
+            if inc_reply is not None and inc_cost is not None:
+                result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
             break
 
     arm_stats = {"incumbent": inc_stats, "candidate": cand_stats}
-    return result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats
+    return result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected
 
 
 def run(
@@ -241,6 +253,9 @@ def run(
     """
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
+
+    if batch and poll_interval_s < 1:
+        raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
 
     plan_result = plan(
         suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir,
@@ -277,11 +292,11 @@ def run(
         judge_ctx = {"id": plan_result.judge_id, "price": prices.rows[plan_result.judge_id], "api_key": api_keys[judge_provider]}
 
     meter = cost_mod.CostMeter(cap_usd=cap_usd)
-    items = suite.items[:limit] if limit else suite.items
+    items = suite.items[:limit] if limit is not None else suite.items
     run_name = name or f"{suite.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
-    result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats = _execute_items(
+    result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected = _execute_items(
         items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx
     )
 
@@ -293,6 +308,8 @@ def run(
     record["effective_config"] = effective_config
 
     _write_run_json(state_dir, run_name, record)
+    if unexpected is not None:
+        raise unexpected
     return record
 
 

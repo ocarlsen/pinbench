@@ -307,6 +307,16 @@ def cmd_bump(args):
     return 0
 
 
+def _positive_int(text):
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
 def _add_config_arg(p):
     p.add_argument("--config", default=None, help="path to pinbench.yaml (default: walk up from cwd)")
 
@@ -319,7 +329,7 @@ def _add_arm_args(p):
     p.add_argument("--incumbent", required=True)
     p.add_argument("--candidate", required=True)
     p.add_argument("--cap", type=float, default=None)
-    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--limit", type=_positive_int, default=None)
     p.add_argument("--prices", default=None)
     p.add_argument("--state", default=None)
     p.add_argument("--allow-self-judge", action="store_true", help="allow the suite's judge model to also be an arm")
@@ -346,7 +356,7 @@ def build_parser():
     p_run = sub.add_parser("run", help="run both arms over a suite")
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None)
-    p_run.add_argument("--poll-interval", type=int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch only)")
+    p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch only)")
     p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch only)")
     p_run.set_defaults(func=cmd_run)
 
