@@ -357,7 +357,7 @@ def build_parser():
     p_run = sub.add_parser("run", help="run both arms over a suite")
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None)
-    p_run.add_argument("--timeout", type=_positive_int, default=60, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
+    p_run.add_argument("--timeout", type=_positive_int, default=runner_mod.DEFAULT_TIMEOUT_S, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
     p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch only)")
     p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch only)")
     p_run.set_defaults(func=cmd_run)

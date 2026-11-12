@@ -8,6 +8,8 @@ paid output. Also refuses to let a suite's fixed judge model be the same id as e
 
 from __future__ import annotations
 
+import math
+
 import datetime as _dt
 import json
 import os
@@ -148,9 +150,9 @@ def _recorded_params(suite, params):
     return {"max_output_tokens": suite.max_output_tokens, **params}
 
 
-# Per-call HTTP timeout for the sync path (arms and judge). The adapters' own default; `run
-# --timeout` overrides it. Batch runs make no per-call request, so it does not apply there.
-DEFAULT_TIMEOUT_S = 60
+# Per-call HTTP timeout for the sync path (arms and judge): judge.DEFAULT_TIMEOUT_S, the
+# adapters' own default. `run --timeout` overrides it. Batch runs make no per-call request.
+DEFAULT_TIMEOUT_S = judge_mod.DEFAULT_TIMEOUT_S
 
 
 def _call_arm(model_id, suite, item, params, api_keys, timeout_s=DEFAULT_TIMEOUT_S):
@@ -259,7 +261,7 @@ def run(
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
-    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or timeout_s <= 0:
+    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
         raise PlanRefused(f"--timeout must be a positive number of seconds, got {timeout_s!r}")
     if batch and poll_interval_s < 1:
         raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")

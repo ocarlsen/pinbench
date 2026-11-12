@@ -65,6 +65,9 @@ class JudgeOutcome:
     skipped: Optional[str] = None
 
 
+# Per-call HTTP timeout (seconds) for sync arm and judge calls; `run --timeout` overrides it.
+DEFAULT_TIMEOUT_S = 60
+
 def prompt_hash(rubric: str) -> str:
     """sha256 of the fixed system prompt + this suite's rubric text.
 
@@ -159,7 +162,7 @@ def interpret_reply(reply, item, suite) -> JudgeOutcome:
     return outcome
 
 
-def judge_output(judge_id, item, suite, output_text, api_key, params=None, timeout_s=60):
+def judge_output(judge_id, item, suite, output_text, api_key, params=None, timeout_s=DEFAULT_TIMEOUT_S):
     """Call the fixed judge model on exactly one output. Returns (JudgeOutcome, Reply)."""
     system, user = build_messages(item, suite, output_text)
     adapter = providers.route(judge_id)
@@ -206,7 +209,7 @@ def skip_reason(reply) -> Optional[str]:
     return None
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=60) -> tuple:
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
     `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
