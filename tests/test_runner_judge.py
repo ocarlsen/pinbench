@@ -249,3 +249,34 @@ def test_judge_metrics_in_a_mixed_run_score_the_skipped_item_as_a_miss(tmp_path,
     # The candidate was judged on both items: 2 rubric points, 2 hits.
     assert cand_recall.points == 2
     assert cand_recall.hits == 2
+
+
+def test_timeout_reaches_every_arm_and_judge_call(tmp_path, fake_adapter):
+    # issue #8: --timeout must reach each adapter.call, arms and judge alike, and be recorded.
+    s = _judge_suite(tmp_path, n=2)
+    p = _prices(tmp_path)
+    _register_judge_replies(fake_adapter, s, "claude-judge")
+    record = runner.run(s, INC_ID, CAND_ID, p, cap_usd=1.0, state_dir=tmp_path / "state", suite_path="x", name="t600", timeout_s=600)
+    assert fake_adapter.call_count == 8
+    assert fake_adapter.timeouts == [600] * 8
+    assert record["timeout_s"] == 600
+
+
+def test_timeout_defaults_to_60(tmp_path, fake_adapter):
+    s = _judge_suite(tmp_path, n=1)
+    p = _prices(tmp_path)
+    _register_judge_replies(fake_adapter, s, "claude-judge")
+    record = runner.run(s, INC_ID, CAND_ID, p, cap_usd=1.0, state_dir=tmp_path / "state", suite_path="x", name="tdef")
+    assert fake_adapter.timeouts == [60] * 4
+    assert record["timeout_s"] == 60
+
+
+def test_non_positive_timeout_refused_before_any_call(tmp_path, fake_adapter):
+    s = _judge_suite(tmp_path, n=1)
+    p = _prices(tmp_path)
+    try:
+        runner.run(s, INC_ID, CAND_ID, p, cap_usd=1.0, state_dir=tmp_path / "state", suite_path="x", name="tbad", timeout_s=0)
+        assert False, "expected PlanRefused"
+    except runner.PlanRefused as exc:
+        assert "--timeout" in str(exc)
+    assert fake_adapter.call_count == 0

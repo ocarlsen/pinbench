@@ -159,11 +159,11 @@ def interpret_reply(reply, item, suite) -> JudgeOutcome:
     return outcome
 
 
-def judge_output(judge_id, item, suite, output_text, api_key, params=None):
+def judge_output(judge_id, item, suite, output_text, api_key, params=None, timeout_s=60):
     """Call the fixed judge model on exactly one output. Returns (JudgeOutcome, Reply)."""
     system, user = build_messages(item, suite, output_text)
     adapter = providers.route(judge_id)
-    reply = adapter.call(judge_id, system, user, suite.judge.max_output_tokens, api_key, params=params)
+    reply = adapter.call(judge_id, system, user, suite.judge.max_output_tokens, api_key, params=params, timeout=timeout_s)
     return interpret_reply(reply, item, suite), reply
 
 
@@ -206,7 +206,7 @@ def skip_reason(reply) -> Optional[str]:
     return None
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict) -> tuple:
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=60) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
     `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
@@ -231,7 +231,7 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_repl
             return record, True
         # The judge model's own request_defaults (prices.yaml) travel with it, same as an
         # arm's do: a judge that needs a model-specific thinking/effort shape gets it.
-        outcome, judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults)
+        outcome, judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults, timeout_s=timeout_s)
         cost_usd = meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price), est)
         record[arm] = _outcome_record(outcome, cost_usd)
     return record, False
