@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+`run --timeout SECONDS` (issue #8): the per-call HTTP timeout for arms and the judge, which was
+fixed at 60 seconds in every provider adapter with no way to change it. A long input on a model
+that always thinks can take minutes per call, and a timeout lands as an error. Default stays
+60; the value used is recorded in run.json as `timeout_s`; a non-positive value is refused
+before any call. `--batch` runs are unaffected.
+
 `run --batch` / `plan --batch`: send every Anthropic arm (and the judge, if any) as one
 Anthropic Message Batch at the batch discount instead of one call per item
 (`pinbench/batch.py`, `providers/anthropic.py`'s `create_batch`/`get_batch`/`fetch_results`/

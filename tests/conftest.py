@@ -23,6 +23,7 @@ class FakeAdapter:
     def __init__(self):
         self.call_count = 0
         self.calls = []
+        self.timeouts = []
         self.replies = {}  # (model_id, item_input) -> Reply
         self.default_output_tokens = None  # override output_tokens for every reply
         self.models = []
@@ -33,6 +34,7 @@ class FakeAdapter:
     def call(self, model_id, system, user_input, max_tokens, api_key, params=None, timeout=60):
         self.call_count += 1
         self.calls.append((model_id, user_input))
+        self.timeouts.append(timeout)
         if not api_key:
             raise ValueError("missing api key")
         key = (model_id, user_input)

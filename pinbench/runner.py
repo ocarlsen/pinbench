@@ -8,6 +8,8 @@ paid output. Also refuses to let a suite's fixed judge model be the same id as e
 
 from __future__ import annotations
 
+import math
+
 import datetime as _dt
 import json
 import os
@@ -148,11 +150,16 @@ def _recorded_params(suite, params):
     return {"max_output_tokens": suite.max_output_tokens, **params}
 
 
-def _call_arm(model_id, suite, item, params, api_keys):
+# Per-call HTTP timeout for the sync path (arms and judge): judge.DEFAULT_TIMEOUT_S, the
+# adapters' own default. `run --timeout` overrides it. Batch runs make no per-call request.
+DEFAULT_TIMEOUT_S = judge_mod.DEFAULT_TIMEOUT_S
+
+
+def _call_arm(model_id, suite, item, params, api_keys, timeout_s=DEFAULT_TIMEOUT_S):
     provider_name = providers.provider_for_id(model_id)
     api_key = api_keys[provider_name]
     adapter = providers.route(model_id)
-    return adapter.call(model_id, suite.task, item.input, suite.max_output_tokens, api_key, params=params)
+    return adapter.call(model_id, suite.task, item.input, suite.max_output_tokens, api_key, params=params, timeout=timeout_s)
 
 
 @dataclass
@@ -169,7 +176,7 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None):
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
     meter stops it. Never aborts a call in flight."""
     inc_params = _merged_params(inc_price, suite)
@@ -189,7 +196,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             if not meter.check(inc_estimates[item.id]):
                 stopped_early = True
                 break
-            inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys)
+            inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
             inc_stats.record(inc_reply)
             inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
             spent_incumbent += inc_cost
@@ -198,7 +205,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 stopped_early = True
                 result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
                 break
-            cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys)
+            cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s)
             cand_stats.record(cand_reply)
             cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
             spent_candidate += cand_cost
@@ -210,7 +217,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 # whether to actually call the judge or just record "skipped", never the caller.
                 judge_record, judge_stopped = judge_mod.run_judge_stage(
                     meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
-                    {"incumbent": inc_reply, "candidate": cand_reply},
+                    {"incumbent": inc_reply, "candidate": cand_reply}, timeout_s=timeout_s,
                 )
                 spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
                 if judge_stopped:
@@ -236,7 +243,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
 def run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
-    batch=False, poll_interval_s=30, max_wait_s=86400,
+    batch=False, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -254,6 +261,8 @@ def run(
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
+    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise PlanRefused(f"--timeout must be a positive number of seconds, got {timeout_s!r}")
     if batch and poll_interval_s < 1:
         raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
 
@@ -297,7 +306,8 @@ def run(
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected = _execute_items(
-        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx
+        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx,
+        timeout_s=timeout_s,
     )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -306,6 +316,7 @@ def run(
         plan_result, spent_incumbent, spent_candidate, spent_judge, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
     )
     record["effective_config"] = effective_config
+    record["timeout_s"] = timeout_s
 
     _write_run_json(state_dir, run_name, record)
     if unexpected is not None:

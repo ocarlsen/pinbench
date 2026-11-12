@@ -6,7 +6,7 @@ Every `pinbench` subcommand, its flags, exit codes, and what each command refuse
 |---|---|
 | `pinbench pins` | print the registry as a table |
 | `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch]` | estimate cost, no spend |
-| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch] [--poll-interval SECONDS] [--max-wait SECONDS]` | run both arms (and the judge, if any), write run.json |
+| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--timeout SECONDS] [--batch] [--poll-interval SECONDS] [--max-wait SECONDS]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff the catalog of each provider `pins.yaml` uses against the last snapshot |
@@ -24,6 +24,7 @@ Other flags:
 |---|---|---|
 | `--limit N` | `plan`, `run` | use only the first N items of the suite, for both the estimate and the run; `items_total` in `run.json` is then N |
 | `--batch` | `plan`, `run` | send every Anthropic arm (and the judge, if any) as one Message Batch at the batch discount instead of one call per item. Anthropic-only: any non-Anthropic id among incumbent/candidate/judge refuses the whole run before anything is sent. `plan --batch` prints the discounted rate per arm/judge with a `batch_multiplier` line from `prices.yaml` |
+| `--timeout SECONDS` | `run` | seconds to wait for each arm and judge call before giving it up as an error; default 60. Recorded in run.json as `timeout_s`. Not used with `--batch`, which makes no per-call request |
 | `--poll-interval SECONDS` | `run` (`--batch` only) | seconds between batch status polls; default 30 |
 | `--max-wait SECONDS` | `run` (`--batch` only) | seconds to wait for a batch to reach `ended` before giving up; default 86400 (24h, the vendor's own expiry). Giving up never cancels the batch -- it is left running, and the same command re-run re-submits (and pays again) |
 | `--format text\|md\|json` | `report` | the format printed to stdout (default `text`); the run's `report.md` is always written in Markdown regardless |
