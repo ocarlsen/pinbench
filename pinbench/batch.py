@@ -457,7 +457,7 @@ JUDGE_PENDING_NOTE = "not judged: the judge batch has not completed"
 
 def run_judge_batch(
     suite, items, result_items, judge_id, judge_price, reuse, meter, run_dir, run_name, persist,
-    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None, rand_fn=None,
+    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None, rand_fn=None, attach_id=None,
 ):
     """`pinbench run --batch-judge`: judge the finished arms' outputs as ONE Message Batch.
 
@@ -485,6 +485,10 @@ def run_judge_batch(
     outcome unknown) records its judge spend as the reserved estimate, never 0, because it
     may still bill; cost.py charges an unknown outcome at least its estimate for the same
     reason. Retries running out raises `JudgeBatchError` after persisting.
+    `attach_id` (run --resume of a recorded batch, or --judge-batch-id): no cap check and no
+    create; the batch with that id is polled and its results collected, so a resume never
+    submits a second batch. Records that already carry a `judge` block (a resumed run) keep
+    their recorded call_order and reused-incumbent judge record.
     Returns (spent_judge, stopped_early); mutates `result_items`.
     """
     import os
@@ -509,12 +513,13 @@ def run_judge_batch(
         if rec["candidate"] is None:
             continue  # the arms stopped before this item's candidate: nothing to judge
         item = items[index]
-        order = judge_mod.pick_call_order()
+        existing = rec.get("judge") or {}
+        order = list(existing.get("call_order") or judge_mod.pick_call_order())
         if only_arms is not None:
             order = [arm for arm in order if arm in only_arms]
         jr = {"call_order": order}
         if reuse is not None:
-            jr["incumbent"] = reuse.items[item.id][1]
+            jr["incumbent"] = existing.get("incumbent") or reuse.items[item.id][1]
         rec["judge"] = jr
         for arm in order:
             reply = runner_mod._reply_from_record(rec[arm])
@@ -539,7 +544,7 @@ def run_judge_batch(
 
     total_est = sum(cost_mod.estimate_judge_call_cost(suite, item, judge_price) for (_, item, _, _) in pending)
     state["reserved_usd"] = total_est
-    if not meter.check(total_est):
+    if attach_id is None and not meter.check(total_est):
         # arms spend + the whole judge batch estimate would pass the cap, and a batch cannot
         # be stopped midway, so none of it is sent.
         state["status"] = "not_submitted_cap"
@@ -565,7 +570,7 @@ def run_judge_batch(
         raise JudgeBatchError(f"judge {where}{status}: {exc}") from exc
 
     try:
-        batch_obj = create_with_retry(requests, api_key, sleep_fn, rand_fn)
+        batch_obj = {"id": attach_id} if attach_id is not None else create_with_retry(requests, api_key, sleep_fn, rand_fn)
     except SubmitOutcomeUnknown as exc:
         _unresolved("submit_outcome_unknown", f"not judged: judge batch submission outcome unknown, a batch may exist: {exc}", exc)
     except Exception as exc:  # noqa: BLE001 - record the failed submit, then re-raise
@@ -575,7 +580,7 @@ def run_judge_batch(
         persist(state, 0.0, False)
         raise
     batch_id = batch_obj["id"]
-    print_fn(f"submitted judge batch {batch_id} ({len(requests)} requests)")
+    print_fn(f"{'attached to' if attach_id is not None else 'submitted'} judge batch {batch_id} ({len(requests)} requests)")
     state.update({"id": batch_id, "status": "submitted"})
     _write_batch_json(Path(run_dir), {"run_name": run_name, "arms": None, "judge": {"id": batch_id}})
     _mark(f"not judged: judge batch {batch_id} has not completed")

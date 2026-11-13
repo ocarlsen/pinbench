@@ -93,6 +93,9 @@ def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
     config_line = _config_line(run)
     if config_line:
         lines.append(config_line)
+    resume_line = _resume_line(run)
+    if resume_line:
+        lines.append(resume_line)
     if run.get("judge_model"):
         lines.append(f"Judge: {run['judge_model']}  (prompt {run['judge_prompt_hash']})")
     lines.append(
@@ -140,6 +143,10 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
     if config_line:
         lines.append("")
         lines.append(config_line)
+    resume_line = _resume_line(run)
+    if resume_line:
+        lines.append("")
+        lines.append(f"> {resume_line}")
     if run.get("judge_model"):
         lines.append("")
         lines.append(f"Judge: `{run['judge_model']}` (prompt `{run['judge_prompt_hash']}`)")
@@ -200,6 +207,19 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "rule": result.rule_text,
     }
     return json.dumps(payload, indent=2) + "\n"
+
+
+def _resume_line(run: dict) -> Optional[str]:
+    """A resumed run, or a run.json that is only a checkpoint, says so in the header."""
+    parts = []
+    resumes = run.get("resumes")
+    if resumes:
+        parts.append(f"Resumed {resumes['count']} time(s); last at {resumes['history'][-1]['resumed_at']}. Items that finished before a stop were kept as recorded (a truncated output is a result, not a failure); errored and never-attempted items were run on resume.")
+    if run.get("status") == "in_progress":
+        parts.append("IN PROGRESS: this run.json is a checkpoint, not a finished run (it crashed or is still running).")
+    elif run.get("status") == "stopped" and run.get("stop_reason"):
+        parts.append(f"STOPPED ({run['stop_reason']}); resume it to finish.")
+    return " ".join(parts) or None
 
 
 def _reuse_line(run: dict) -> Optional[str]:

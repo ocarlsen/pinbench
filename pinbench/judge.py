@@ -26,6 +26,7 @@ from typing import Optional
 
 from . import cost as cost_mod
 from . import providers
+from . import resume as resume_mod
 from . import scoring as scoring_mod
 
 # Fixed across every call: the only things that vary per call are the rubric (suite-level,
@@ -209,7 +210,7 @@ def skip_reason(reply) -> Optional[str]:
     return None
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S, only_arms=None) -> tuple:
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S, only_arms=None, sleep_fn=None) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
     `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
@@ -237,9 +238,20 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_repl
             return record, True
         # The judge model's own request_defaults (prices.yaml) travel with it, same as an
         # arm's do: a judge that needs a model-specific thinking/effort shape gets it.
-        outcome, judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults, timeout_s=timeout_s)
-        cost_usd = meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price, est), est)
+        box = {}
+
+        def _once():
+            box["outcome"], judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults, timeout_s=timeout_s)
+            return judge_reply
+
+        # A 429 / quota error is retried with bounded backoff; the failed attempts' billed
+        # tokens (if any) are charged here, so a retry never hides spend.
+        judge_reply, prior_cost = resume_mod.call_with_rate_limit_retry(_once, judge_price, est, sleep_fn)
+        outcome = box["outcome"]
+        cost_usd = meter.charge(prior_cost, prior_cost) + meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price, est), est)
         record[arm] = _outcome_record(outcome, cost_usd)
+        if resume_mod.is_rate_limited(judge_reply):
+            raise resume_mod.RateLimitExhausted(f"judge call rate limited after retries: {judge_reply.error}", record)
     return record, False
 
 
