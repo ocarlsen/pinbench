@@ -1,0 +1,349 @@
+"""Offline tests for `--batch-judge`: arms run synchronously (a fake adapter stands in for
+Anthropic and Gemini), every judge call goes out as ONE Message Batch (the `FakeBatchHTTP`
+stub from tests/test_batch.py), priced at the judge row's batch_multiplier.
+
+Each test is written to fail if the behavior it names is reverted in pinbench/batch.py,
+runner.py, report.py or cli.py (proven in the PR by reverting each in a scratch copy)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+import yaml
+
+from test_batch import (  # noqa: F401 - the fixtures must be importable to be used
+    FakeBatchHTTP, _FakeResponse, _batch_obj, _run_cli, _succeeded_line, _write_prices, _write_suite,
+    fake_http, no_sleep,
+)
+
+from pinbench import judge as judge_mod
+from pinbench import prices as prices_mod
+from pinbench import providers
+from pinbench import runner as runner_mod
+from pinbench import suite as suite_mod
+from pinbench.providers import anthropic as anthropic_provider
+
+JUDGE = "claude-haiku-4-5"
+JUDGE_BATCH = "msgbatch_judge"
+GEMINI = "gemini-4-carbon"
+JUDGE_DEFAULTS = {"thinking": {"type": "between_tools"}}
+
+
+def _verdict(i, extra=1, notes="fine"):
+    return json.dumps({"hit": [f"p{i}"], "extra": extra, "notes": notes})
+
+
+VERDICT = _verdict(0)
+
+
+def _prices_file(tmp_path, judge_multiplier=0.5, gpt_multiplier=None):
+    judge_row = {"input": 0.1, "output": 0.5, "source": "https://v", "request_defaults": JUDGE_DEFAULTS}
+    if judge_multiplier is not None:
+        judge_row["batch_multiplier"] = judge_multiplier
+    return _write_prices(tmp_path, {
+        GEMINI: {"input": 1.0, "output": 4.0, "source": "https://g"},
+        # priced for batch, so only the provider check can refuse it as a judge
+        "gpt-5-mini": {"input": 0.25, "output": 2.0, "source": "https://w", "batch_multiplier": 0.5},
+        JUDGE: judge_row,
+    })
+
+
+def _suite_file(tmp_path, n=2, judge_model=None, judge=True):
+    path = _write_suite(tmp_path, n=n, judge=judge)
+    if judge_model is not None:
+        data = yaml.safe_load(path.read_text())
+        data["judge"]["model"] = judge_model
+        path.write_text(yaml.safe_dump(data, sort_keys=False))
+    return path
+
+
+def _args(suite_path, prices_path, *extra, incumbent="claude-sonnet-5-5", candidate=GEMINI, name="bj"):
+    return ["run", str(suite_path), "--incumbent", incumbent, "--candidate", candidate,
+            "--cap", "5.0", "--prices", str(prices_path), "--name", name, *extra]
+
+
+def _judge_lines(n, arms=("incumbent", "candidate"), input_tokens=100, output_tokens=10, extra=1, notes="fine"):
+    return "\n".join(
+        _succeeded_line(f"{i:04d}-judge-{arm}", _verdict(i, extra, notes), input_tokens=input_tokens, output_tokens=output_tokens, model=JUDGE)
+        for i in range(n) for arm in arms
+    )
+
+
+def _script_judge_batch(http, n=2, batch_id=JUDGE_BATCH, arms=("incumbent", "candidate"), **kw):
+    http.create_responses.append(_batch_obj(batch_id, "in_progress", {"processing": n * len(arms)}))
+    http.status_sequences[batch_id] = [_batch_obj(batch_id, "ended", {"succeeded": n * len(arms)})]
+    http.results[batch_id] = _judge_lines(n, arms, **kw)
+
+
+@pytest.fixture
+def gemini_env(monkeypatch, fake_adapter):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    return fake_adapter
+
+
+def _load(tmp_path, name="bj"):
+    return json.loads((tmp_path / ".pinbench" / "runs" / name / "run.json").read_text())
+
+
+# --- refusals, all before any call or POST --------------------------------------------------
+
+def _assert_refused_clean(rc, http, adapter):
+    assert rc == 2
+    assert http.create_posts == []
+    assert adapter.call_count == 0
+
+
+def test_refuses_with_batch(tmp_path, monkeypatch, fake_http, gemini_env):
+    rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch", "--batch-judge",
+                                               candidate="claude-haiku-5-5"))
+    _assert_refused_clean(rc, fake_http, gemini_env)
+
+
+def test_refuses_suite_without_judge(tmp_path, monkeypatch, fake_http, gemini_env):
+    rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path, judge=False), _prices_file(tmp_path), "--batch-judge"))
+    _assert_refused_clean(rc, fake_http, gemini_env)
+
+
+def test_refuses_non_anthropic_judge(tmp_path, monkeypatch, fake_http, gemini_env):
+    suite_path = _suite_file(tmp_path, judge_model="gpt-5-mini")
+    rc = _run_cli(tmp_path, monkeypatch, _args(suite_path, _prices_file(tmp_path), "--batch-judge"))
+    _assert_refused_clean(rc, fake_http, gemini_env)
+
+
+def test_refuses_judge_row_without_batch_multiplier(tmp_path, monkeypatch, fake_http, gemini_env):
+    rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path, judge_multiplier=None), "--batch-judge"))
+    _assert_refused_clean(rc, fake_http, gemini_env)
+
+
+def test_plan_refuses_the_same_way(tmp_path, monkeypatch, fake_http, gemini_env):
+    suite_path = _suite_file(tmp_path)
+    prices_path = _prices_file(tmp_path, judge_multiplier=None)
+    rc = _run_cli(tmp_path, monkeypatch, ["plan", str(suite_path), "--incumbent", "claude-sonnet-5-5", "--candidate", GEMINI,
+                                          "--cap", "5.0", "--prices", str(prices_path), "--batch-judge"])
+    assert rc == 2
+
+
+# --- plan estimates the judge at the batch price, arms at the sync price --------------------
+
+def test_plan_prices_only_the_judge_at_batch(tmp_path, gemini_env):
+    prices = prices_mod.load(_prices_file(tmp_path))
+    suite = suite_mod.load(_suite_file(tmp_path))
+    sync = runner_mod.plan(suite, "claude-sonnet-5-5", GEMINI, prices)
+    bj = runner_mod.plan(suite, "claude-sonnet-5-5", GEMINI, prices, batch_judge=True)
+    assert bj.estimate.judge.cost_usd == pytest.approx(sync.estimate.judge.cost_usd * 0.5)
+    assert bj.estimate.incumbent.cost_usd == sync.estimate.incumbent.cost_usd
+    assert bj.estimate.candidate.cost_usd == sync.estimate.candidate.cost_usd
+
+
+# --- sync Gemini candidate + batched judge, end to end -------------------------------------
+
+def test_sync_gemini_arms_with_batched_judge(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep, capsys):
+    _script_judge_batch(fake_http)
+    rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge"))
+    assert rc == 0
+    # arms: 2 items x 2 arms made synchronously; the judge made NO sync call
+    assert gemini_env.call_count == 4
+    assert {m for m, _ in gemini_env.calls} == {"claude-sonnet-5-5", GEMINI}
+    # exactly one POST, four judge requests, none for an arm
+    assert len(fake_http.create_posts) == 1
+    ids = sorted(r["custom_id"] for r in fake_http.create_posts[0]["requests"])
+    assert ids == ["0000-judge-candidate", "0000-judge-incumbent", "0001-judge-candidate", "0001-judge-incumbent"]
+    assert {r["params"]["model"] for r in fake_http.create_posts[0]["requests"]} == {JUDGE}
+
+    run = _load(tmp_path)
+    assert "batch" not in run  # the arms were NOT batch-priced
+    assert run["judge_batch"]["id"] == JUDGE_BATCH
+    assert run["judge_batch"]["price_multiplier"] == 0.5
+    per_call = (100 * 0.1 * 0.5 + 10 * 0.5 * 0.5) / 1e6
+    assert run["spent_usd"]["judge"] == pytest.approx(4 * per_call)
+    assert run["items"][0]["judge"]["incumbent"]["hit"] == ["p0"]
+    assert run["items"][0]["judge"]["incumbent"]["cost_usd"] == pytest.approx(per_call)
+    # arm cost is the sync price: sonnet 2.0/10.0 per Mtok on the fake adapter's tokens
+    inc = run["items"][0]["incumbent"]
+    assert inc["cost_usd"] == pytest.approx(inc["input_tokens"] * 2.0 / 1e6 + inc["output_tokens"] * 10.0 / 1e6)
+    batch_json = json.loads((tmp_path / ".pinbench" / "runs" / "bj" / "batch.json").read_text())
+    assert batch_json["judge"] == {"id": JUDGE_BATCH}
+
+    capsys.readouterr()
+    assert _run_cli(tmp_path, monkeypatch, ["report", "bj", "--state", str(tmp_path / ".pinbench")]) == 0
+    out = capsys.readouterr().out
+    assert f"judge: batched (id {JUDGE_BATCH})" in out
+
+
+def test_poll_interval_and_max_wait_are_used(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
+    rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge",
+                                               "--poll-interval", "7", "--max-wait", "7"))
+    assert rc == 0
+    assert no_sleep == [7]  # one sleep of the given interval, then the max-wait gives up
+
+
+# --- judge bodies are byte-identical to a sync judge call ----------------------------------
+
+def test_judge_bodies_byte_identical_to_sync(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    suite_path = _suite_file(tmp_path)
+    assert _run_cli(tmp_path, monkeypatch, _args(suite_path, _prices_file(tmp_path), "--batch-judge")) == 0
+    batch_body = next(r["params"] for r in fake_http.create_posts[0]["requests"] if r["custom_id"] == "0000-judge-incumbent")
+    assert "thinking" in batch_body  # the judge row's request_defaults travelled
+
+    suite = suite_mod.load(suite_path)
+    prices = prices_mod.load(tmp_path / "prices.yaml")
+    captured = {}
+
+    def sync_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse(json.dumps({
+            "id": "m", "type": "message", "role": "assistant", "content": [{"type": "text", "text": VERDICT}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 2},
+        }).encode("utf-8"))
+
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", sync_urlopen)
+    monkeypatch.setattr(providers, "route", lambda model_id: providers.ADAPTERS["anthropic"])
+    judge_mod.judge_output(JUDGE, suite.items[0], suite, "echo:Q0?", "key", params=prices.rows[JUDGE].request_defaults)
+    assert json.dumps(batch_body, sort_keys=True) == json.dumps(captured["body"], sort_keys=True)
+
+
+# --- arms the judge must skip are recorded, never sent -------------------------------------
+
+def test_skipped_arms_are_recorded_not_sent(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    gemini_env.set_reply(GEMINI, "Q0?", providers.Reply(output="cut off", input_tokens=5, output_tokens=64, latency_ms=1, stop_reason="max_tokens"))
+    gemini_env.set_reply("claude-sonnet-5-5", "Q1?", providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="boom", status_code=500))
+    _script_judge_batch(fake_http, arms=("incumbent", "candidate"))
+    fake_http.results[JUDGE_BATCH] = "\n".join([
+        _succeeded_line("0000-judge-incumbent", VERDICT, model=JUDGE),
+        _succeeded_line("0001-judge-candidate", _verdict(1), model=JUDGE),
+    ])
+    assert _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge")) == 0
+    sent = sorted(r["custom_id"] for r in fake_http.create_posts[0]["requests"])
+    assert sent == ["0000-judge-incumbent", "0001-judge-candidate"]
+    run = _load(tmp_path)
+    assert run["items"][0]["judge"]["candidate"]["skipped"] == "skipped: arm output truncated"
+    assert run["items"][1]["judge"]["incumbent"]["skipped"] == "skipped: arm error"
+    assert run["items"][0]["judge"]["candidate"]["cost_usd"] == 0.0
+
+
+# --- the cap is checked against arms spend + the whole judge batch BEFORE submitting --------
+
+def test_cap_reserve_refuses_the_batch_before_submit(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    # The candidate's actual cost (3M input tokens at $1/Mtok = $3) passes the per-call
+    # check but leaves no room for the judge batch under a $2 cap, though the pre-run
+    # estimate fit.
+    suite_path = _suite_file(tmp_path, n=1)
+    gemini_env.set_reply(GEMINI, "Q0?", providers.Reply(output="ok", input_tokens=3_000_000, output_tokens=2, latency_ms=1, stop_reason="end_turn"))
+    args = _args(suite_path, _prices_file(tmp_path), "--batch-judge")
+    args[args.index("--cap") + 1] = "2.0"
+    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    assert fake_http.create_posts == []
+    run = _load(tmp_path)
+    assert run["stopped_early"] is True
+    assert run["judge_batch"]["status"] == "not_submitted_cap"
+    assert "exceed the cap" in run["items"][0]["judge"]["incumbent"]["error"]
+    assert run["spent_usd"]["judge"] == 0.0
+    assert run["items"][0]["candidate"]["output"] == "ok"  # paid arm output kept
+
+
+# --- arms are on disk before the batch is submitted ----------------------------------------
+
+def test_arms_persisted_before_submit(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    seen = {}
+    inner = fake_http.urlopen
+
+    def spying_urlopen(req, timeout=None):
+        if req.get_method() == "POST" and req.full_url.endswith("/v1/messages/batches"):
+            seen["run"] = _load(tmp_path)
+        return inner(req, timeout)
+
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", spying_urlopen)
+    assert _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge")) == 0
+    before = seen["run"]
+    assert [i["incumbent"]["output"] for i in before["items"]] == ["echo:Q0?", "echo:Q1?"]
+    assert [i["candidate"]["output"] for i in before["items"]] == ["echo:Q0?", "echo:Q1?"]
+    assert before["judge_batch"]["status"] == "pending"
+    assert "not judged" in before["items"][0]["judge"]["incumbent"]["error"]
+
+
+# --- max-wait timeout: not judged, never guessed, INCOMPLETE ------------------------------
+
+def test_timeout_leaves_unjudged_records_and_incomplete_verdict(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep, capsys):
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
+    args = _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge", "--poll-interval", "1", "--max-wait", "1")
+    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "timed_out"
+    assert run["judge_batch"]["id"] == JUDGE_BATCH
+    for item in run["items"]:
+        for arm in ("incumbent", "candidate"):
+            rec = item["judge"][arm]
+            assert rec["hit"] == [] and "not judged" in rec["error"] and rec["cost_usd"] == 0.0
+    assert run["items"][0]["candidate"]["output"] == "echo:Q0?"
+    assert fake_http.cancel_posts == []  # left running, never canceled
+    assert json.loads((tmp_path / ".pinbench" / "runs" / "bj" / "batch.json").read_text())["judge"]["id"] == JUDGE_BATCH
+    capsys.readouterr()
+    _run_cli(tmp_path, monkeypatch, ["report", "bj", "--state", str(tmp_path / ".pinbench")])
+    assert "INCOMPLETE" in capsys.readouterr().out
+
+
+# --- --reuse-incumbent: only the candidate's judge calls are batched ----------------------
+
+def _source_then_reuse(tmp_path, monkeypatch, fake_http):
+    """Run 1: --batch-judge, incumbent sonnet vs gemini. Run 2: reuse sonnet's outputs and
+    judge records against a haiku candidate, also --batch-judge."""
+    prices_path = _prices_file(tmp_path)
+    suite_path = _suite_file(tmp_path)
+    _script_judge_batch(fake_http, input_tokens=200, output_tokens=20, extra=3, notes="source")
+    assert _run_cli(tmp_path, monkeypatch, _args(suite_path, prices_path, "--batch-judge", name="src")) == 0
+    fake_http.create_posts.clear()
+    _script_judge_batch(fake_http, batch_id="msgbatch_judge2", arms=("candidate",))
+    rc = _run_cli(tmp_path, monkeypatch, _args(suite_path, prices_path, "--batch-judge", "--reuse-incumbent", "src",
+                                               candidate="claude-haiku-5-5", name="re"))
+    return rc
+
+
+def test_reuse_incumbent_batches_only_candidate_judge_calls(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    assert _source_then_reuse(tmp_path, monkeypatch, fake_http) == 0
+    sent = sorted(r["custom_id"] for r in fake_http.create_posts[0]["requests"])
+    assert sent == ["0000-judge-candidate", "0001-judge-candidate"]
+    src, new = _load(tmp_path, "src"), _load(tmp_path, "re")
+    assert new["judge_batch"]["id"] == "msgbatch_judge2"
+    for i in range(2):
+        carried = new["items"][i]["judge"]["incumbent"]
+        assert carried["extra"] == 3 and carried["notes"] == "source"
+        assert carried["reused_cost_usd"] == src["items"][i]["judge"]["incumbent"]["cost_usd"]
+        assert new["items"][i]["judge"]["candidate"]["notes"] == "fine"
+    assert new["spent_usd"]["judge"] == pytest.approx(sum(i["judge"]["candidate"]["cost_usd"] for i in new["items"]))
+    assert new["spent_usd"]["incumbent"] == 0.0
+
+
+# --- round trip: a later reuse of a --batch-judge run rescales the judge, not the arms -----
+
+def test_reuse_of_batch_judge_run_rescales_judge_cost_only(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    assert _source_then_reuse(tmp_path, monkeypatch, fake_http) == 0
+    src, new = _load(tmp_path, "src"), _load(tmp_path, "re")
+    assert "batch" not in src and src["judge_batch"]["price_multiplier"] == 0.5
+    for i in range(2):
+        src_judge = src["items"][i]["judge"]["incumbent"]["cost_usd"]
+        carried = new["items"][i]["judge"]["incumbent"]
+        # judge cost is back at the sync price: recorded / the judge batch multiplier
+        assert carried["cost_usd"] == pytest.approx(src_judge / 0.5)
+        # the arm was sync-priced in the source, so it is repriced from tokens, never rescaled
+        src_arm = src["items"][i]["incumbent"]
+        assert src_arm["cost_usd"] == pytest.approx(src_arm["input_tokens"] * 2.0 / 1e6 + src_arm["output_tokens"] * 10.0 / 1e6)
+        assert new["items"][i]["incumbent"]["cost_usd"] == pytest.approx(src_arm["cost_usd"])
+    assert not runner_mod._source_is_batch(src)
+
+
+def test_reuse_refuses_bad_recorded_judge_batch_multiplier(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    assert _source_then_reuse(tmp_path, monkeypatch, fake_http) == 0
+    path = tmp_path / ".pinbench" / "runs" / "src" / "run.json"
+    data = json.loads(path.read_text())
+    data["judge_batch"]["price_multiplier"] = 2
+    path.write_text(json.dumps(data))
+    suite = suite_mod.load(tmp_path / "demo.yaml")
+    prices = prices_mod.load(tmp_path / "prices.yaml")
+    with pytest.raises(runner_mod.PlanRefused, match="judge_batch.price_multiplier"):
+        runner_mod.plan(suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, state_dir=tmp_path / ".pinbench", reuse_incumbent="src")

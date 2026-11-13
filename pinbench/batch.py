@@ -366,3 +366,155 @@ def run_batch(
         "cap_exceeded_after_results": cap_exceeded_after_results,
     }
     return record
+
+
+JUDGE_PENDING_NOTE = "not judged: the judge batch has not completed"
+
+
+def run_judge_batch(
+    suite, items, result_items, judge_id, judge_price, reuse, meter, run_dir, run_name, persist,
+    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None,
+):
+    """`pinbench run --batch-judge`: judge the finished arms' outputs as ONE Message Batch.
+
+    The arms already ran synchronously and `result_items` (the `runner._item_record` dicts)
+    holds their outputs. `judge_price` is the judge row already at the batch price
+    (`.at_batch()`); requests come from `build_judge_requests`, so they are the same bodies
+    a sync judge call sends, and skips come from `judge.skip_reason`, so a skipped arm is
+    recorded and never sent. With `reuse`, only the candidate is judged and the incumbent's
+    stored judge record is carried over.
+
+    Order: (1) every pending slot gets an honest "not judged" placeholder error, (2) the cap
+    is checked against the batch's whole estimate (a batch cannot be stopped midway), (3)
+    `persist(judge_state, spent_judge, stopped_early)` writes run.json BEFORE the submit and
+    again once the id is known, so a crash or timeout never loses paid arm outputs, (4)
+    submit, write batch.json, wait. A batch that outlasts `max_wait_s` is left running and
+    its slots keep the placeholder error (the verdict is INCOMPLETE); nothing is guessed.
+    Returns (spent_judge, stopped_early); mutates `result_items`.
+    """
+    import os
+
+    from . import cost as cost_mod
+    from . import judge as judge_mod
+    from . import providers as providers_mod
+    from . import runner as runner_mod
+    from .providers import anthropic as anthropic_mod
+
+    if poll_interval_s < 1:
+        raise ValueError(f"poll interval must be at least 1 second, got {poll_interval_s}")
+    sleep_fn = sleep_fn or time.sleep
+    print_fn = print_fn or print
+    api_key = os.environ.get(providers_mod.ENV_KEYS["anthropic"])
+
+    state = {"id": None, "price_multiplier": judge_price.batch_multiplier, "status": "pending"}
+    only_arms = ("candidate",) if reuse is not None else None
+    pending: list = []
+    slots: dict = {}  # (index, arm) -> the judge record dict to fill
+    for index, rec in enumerate(result_items):
+        if rec["candidate"] is None:
+            continue  # the arms stopped before this item's candidate: nothing to judge
+        item = items[index]
+        order = judge_mod.pick_call_order()
+        if only_arms is not None:
+            order = [arm for arm in order if arm in only_arms]
+        jr = {"call_order": order}
+        if reuse is not None:
+            jr["incumbent"] = reuse.items[item.id][1]
+        rec["judge"] = jr
+        for arm in order:
+            reply = runner_mod._reply_from_record(rec[arm])
+            reason = judge_mod.skip_reason(reply)
+            if reason is not None:
+                jr[arm] = judge_mod._outcome_record(judge_mod.JudgeOutcome(hit=[], extra=0, notes="", skipped=reason), 0.0)
+            else:
+                outcome = judge_mod.JudgeOutcome(hit=[], extra=0, notes="", error=JUDGE_PENDING_NOTE)
+                jr[arm] = judge_mod._outcome_record(outcome, 0.0)
+                pending.append((index, item, arm, reply.output))
+                slots[(index, arm)] = jr
+
+    def _mark(note):
+        for (_index, arm), jr in slots.items():
+            if jr[arm]["error"] is not None:
+                jr[arm]["error"] = note
+
+    if not pending:
+        state["status"] = "nothing_to_judge"
+        persist(state, 0.0, False)
+        return 0.0, False
+
+    total_est = sum(cost_mod.estimate_judge_call_cost(suite, item, judge_price) for (_, item, _, _) in pending)
+    state["reserved_usd"] = total_est
+    if not meter.check(total_est):
+        # arms spend + the whole judge batch estimate would pass the cap, and a batch cannot
+        # be stopped midway, so none of it is sent.
+        state["status"] = "not_submitted_cap"
+        _mark("not judged: judge batch not submitted, its estimate would exceed the cap")
+        persist(state, 0.0, True)
+        return 0.0, True
+
+    requests = build_judge_requests(pending, suite, judge_id, judge_price)
+    custom_ids = [r["custom_id"] for r in requests]
+    persist(state, 0.0, False)  # arms are on disk before anything is submitted
+    try:
+        batch_obj = anthropic_mod.create_batch(requests, api_key)
+    except Exception as exc:  # noqa: BLE001 - record the failed submit, then re-raise
+        state["status"] = "submit_failed"
+        _mark(f"not judged: judge batch submission failed: {exc}")
+        persist(state, 0.0, False)
+        raise
+    batch_id = batch_obj["id"]
+    print_fn(f"submitted judge batch {batch_id} ({len(requests)} requests)")
+    state.update({"id": batch_id, "status": "submitted"})
+    _write_batch_json(Path(run_dir), {"run_name": run_name, "arms": None, "judge": {"id": batch_id}})
+    _mark(f"not judged: judge batch {batch_id} has not completed")
+    persist(state, 0.0, False)
+
+    try:
+        final, polls = wait_for_batch(
+            lambda: anthropic_mod.get_batch(batch_id, api_key), batch_id, poll_interval_s, max_wait_s, sleep_fn, print_fn,
+        )
+    except MaxWaitExceeded as exc:
+        print_fn("")
+        print(f"warning: {exc}", file=sys.stderr)
+        state["status"] = "timed_out"
+        _mark(f"not judged: judge batch {batch_id} still running after {max_wait_s}s")
+        persist(state, 0.0, False)
+        return 0.0, False
+    except KeyboardInterrupt:
+        print(
+            f"\nbatch {batch_id} is still running (results kept 29 days). "
+            f"Cancel: curl -X POST https://api.anthropic.com/v1/messages/batches/{batch_id}/cancel "
+            "-H \"x-api-key: $ANTHROPIC_API_KEY\" -H \"anthropic-version: 2023-06-01\". "
+            "Re-running the same command re-submits (and pays again).",
+            file=sys.stderr,
+        )
+        raise
+    print_fn("")
+
+    results = collect_results(anthropic_mod, providers_mod, batch_id, api_key, custom_ids)
+    spent_judge = 0.0
+    result_types = {}
+    for index, item, arm, _output in pending:
+        cid = custom_id(index, f"judge-{arm}")
+        reply, rtype = results[cid]
+        outcome = judge_mod.interpret_reply(reply, item, suite)
+        est = cost_mod.estimate_judge_call_cost(suite, item, judge_price)
+        cost_usd = meter.charge(cost_mod.actual_call_cost(reply, judge_price), est)
+        spent_judge += cost_usd
+        slots[(index, arm)][arm] = judge_mod._outcome_record(outcome, cost_usd)
+        result_types[cid] = {"item": item.id, "arm": arm, "type": rtype}
+
+    state.update({
+        "status": "ended", **_batch_json_entry(final), "id": batch_id, "results": result_types,
+        "poll": {"interval_s": poll_interval_s, "max_wait_s": max_wait_s, "polls": polls},
+        "cap_exceeded_after_results": meter.spent_usd > meter.cap_usd,
+    })
+    if state["cap_exceeded_after_results"]:
+        print(
+            f"warning: actual batch spend ${meter.spent_usd:.4f} exceeded cap ${meter.cap_usd:.2f} after the judge "
+            "batch came back; the estimate is a ceiling, nothing remained to stop",
+            file=sys.stderr,
+        )
+    state["status"] = "ended"
+    persist(state, spent_judge, False)
+    return spent_judge, False

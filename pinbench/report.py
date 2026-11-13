@@ -232,7 +232,14 @@ def _batch_line(run: dict) -> Optional[str]:
     reader can tell a batch run from a sync one without opening run.json."""
     batch = run.get("batch")
     if not batch:
-        return None
+        judge_batch = run.get("judge_batch")
+        if not judge_batch:
+            return None
+        # `--batch-judge`: arms ran synchronously, only the judge was batched.
+        text = f"judge: batched (id {judge_batch.get('id')})"
+        if judge_batch.get("status") not in ("ended", "nothing_to_judge"):
+            text += f", {judge_batch.get('status')}: not every judge call has a result"
+        return text
     arms = batch.get("arms") or {}
     arm_counts = arms.get("request_counts") or {}
     text = f"Batch: arms {arms.get('id')} ({arm_counts.get('succeeded', 0)} succeeded, {arm_counts.get('errored', 0)} errored)"

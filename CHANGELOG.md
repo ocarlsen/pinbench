@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+`run --batch-judge` / `plan --batch-judge`: run the arms synchronously, then send every judge call
+as one Anthropic Message Batch at the judge row's `batch_multiplier`. A judged run with a
+non-Anthropic arm (Gemini) cannot use `--batch`, which is all-or-nothing and Anthropic-only, so its
+Anthropic judge paid full price; this halves just the judge. Refuses before any spend with
+`--batch`, a suite with no judge, a non-Anthropic judge, or a judge row with no `batch_multiplier`.
+Judge request bodies come from the same builder as a sync judge call, and arms the judge skips
+(errored, empty, truncated) are recorded as skipped and not sent. The cap is checked against arms
+spend plus the whole batch estimate before submitting; actual token cost is charged at the batch
+price after the results arrive. The arms are written to `run.json` before the batch is submitted,
+the id goes to `batch.json`, and a batch that outlasts `--max-wait` is left running with the judge
+records marked "not judged" (the verdict is INCOMPLETE). `run.json` records `judge_batch`, not
+`batch`, and `--reuse-incumbent` of such a run rescales the judge cost by
+`judge_batch.price_multiplier` while treating its arm cost as sync-priced. Works with
+`--reuse-incumbent` (only the candidate's judge calls are batched). The report header notes
+`judge: batched (id ...)`.
+
 Gemini adapter follows `status: requires_continuation`. A non-streaming hop stops at 32,768
 tokens on gemini-4-carbon and gemini-4-argon (docs: aistudio.google.com/docs/long-decode), and a
 live run at thinking_level medium came back after 32,765 thought tokens with no text, which was
