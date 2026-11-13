@@ -374,12 +374,16 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None):
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None, judge_reserve_usd=0.0):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
     meter stops it. Never aborts a call in flight.
 
     `reuse` (a ReuseSource) fills the incumbent slot from stored records: no incumbent call,
-    no incumbent judge call, nothing charged to the meter for either."""
+    no incumbent judge call, nothing charged to the meter for either.
+
+    `judge_reserve_usd` (--batch-judge) is the judge batch's estimate: every arm call's meter
+    check must leave that much room under the cap, so the arms stop early rather than spend
+    the cap and strand the batch the run was meant to end with."""
     inc_params = _merged_params(inc_price, suite)
     cand_params = _merged_params(cand_price, suite)
     result_items = []
@@ -401,7 +405,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 inc_cost = reused_arm["cost_usd"]
                 inc_stats.record(inc_reply)
             else:
-                if not meter.check(inc_estimates[item.id]):
+                if not meter.check(inc_estimates[item.id] + judge_reserve_usd):
                     stopped_early = True
                     break
                 inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
@@ -409,7 +413,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, inc_estimates[item.id]), inc_estimates[item.id])
                 spent_incumbent += inc_cost
 
-            if not meter.check(cand_estimates[item.id]):
+            if not meter.check(cand_estimates[item.id] + judge_reserve_usd):
                 stopped_early = True
                 result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None, incumbent_record=reused_arm))
                 break
@@ -526,6 +530,7 @@ def run(
     result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected = _execute_items(
         items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys,
         judge_ctx=None if batch_judge else judge_ctx, timeout_s=timeout_s, reuse=plan_result.reuse,
+        judge_reserve_usd=plan_result.estimate.judge.cost_usd if batch_judge and plan_result.estimate.judge else 0.0,
     )
 
     def _write(judge_spent, stopped, judge_batch=None):

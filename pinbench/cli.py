@@ -2,7 +2,7 @@
 
 Refuses to do: let any subcommand touch the network or write a pin outside the documented
 exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded, 4 a `run` arm had zero
-successes). A `run` with SOME but not all items completed on both arms still exits 0 (a
+successes, 5 a `--batch-judge` batch timed out). A `run` with SOME but not all items completed on both arms still exits 0 (a
 printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure. A
 `run` arm with any truncated output (the model hit max_output_tokens) also still exits 0,
 with a loud warning naming the count -- `report` is where truncation becomes a hard
@@ -166,6 +166,14 @@ def cmd_run(args):
         for arm in scoring_mod.judge_arms_fully_skipped(record):
             n = scoring_mod.judge_skipped_count(record, arm)
             print(f"warning: judge was never called for {arm} (all {n} item(s) skipped: truncated/error)", file=sys.stderr)
+    judge_batch = record.get("judge_batch") or {}
+    if judge_batch.get("status") == "timed_out":
+        print(
+            f"error: judge batch {judge_batch.get('id')} did not finish within --max-wait and is still running; "
+            f"no item was judged, and its cost is recorded as the reserved estimate ${record['spent_usd'].get('judge', 0.0):.4f}",
+            file=sys.stderr,
+        )
+        return 5
     return 0
 
 

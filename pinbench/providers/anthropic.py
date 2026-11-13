@@ -42,7 +42,20 @@ class NoNetwork(RuntimeError):
 
 
 class BatchError(RuntimeError):
-    """Raised on a non-2xx response from a batch endpoint (create/retrieve/results/cancel)."""
+    """Raised on a non-2xx response from a batch endpoint (create/retrieve/results/cancel),
+    or when the request never got a response (timeout, connection drop).
+
+    `status` is the HTTP code, or None when there was no response. `transient` is True for
+    the failures worth retrying: 429, any 5xx (529 included) and no response at all. Every
+    other 4xx is a real refusal and is never retried."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def transient(self) -> bool:
+        return self.status is None or self.status == 429 or 500 <= self.status <= 599
 
 
 def _guard_network():
@@ -167,7 +180,7 @@ def _open_batch_request(req, timeout, action):
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise BatchError(f"{action} HTTP {exc.code}: {detail[:200]}") from exc
+        raise BatchError(f"{action} HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise BatchError(f"{action}: {exc}") from exc
     except (OSError, ValueError, http.client.HTTPException) as exc:
@@ -192,6 +205,22 @@ def create_batch(requests, api_key, timeout=60) -> dict:
         headers=_batch_headers(api_key),
     )
     return _open_batch_request(req, timeout, "create_batch")
+
+
+def list_batches(api_key, limit=20, timeout=30) -> list:
+    """GET /v1/messages/batches?limit=N: the first page of this workspace's batches, as the
+    list of Message Batch objects (the API returns them with `created_at` and
+    `request_counts`, never the request custom_ids)."""
+    _guard_network()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+    req = urllib.request.Request(
+        f"{API_BASE}{BATCHES_PATH}?limit={int(limit)}",
+        method="GET",
+        headers=_batch_headers(api_key),
+    )
+    data = _open_batch_request(req, timeout, "list_batches")
+    return list(data.get("data") or [])
 
 
 def get_batch(batch_id, api_key, timeout=30) -> dict:
@@ -225,9 +254,12 @@ def fetch_results(batch_id, api_key, timeout=120) -> list:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise BatchError(f"fetch_results HTTP {exc.code}: {detail[:200]}") from exc
+        raise BatchError(f"fetch_results HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise BatchError(f"fetch_results: {exc}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # a read timeout or a dropped connection while reading the results body
+        raise BatchError(f"fetch_results: {type(exc).__name__}: {exc}") from exc
     results = []
     for raw_line in raw.splitlines():
         line = raw_line.strip()

@@ -368,12 +368,124 @@ def run_batch(
     return record
 
 
+# One place for the retry policy: attempts per call (the first try included) and the backoff
+# base. The delay before retry k (k = 1, 2, ...) is RETRY_BACKOFF_BASE_S * 2 ** (k - 1), times
+# a jitter factor in [0.5, 1.0]. Tests inject `sleep_fn` and `rand_fn`.
+RETRY_ATTEMPTS = 5
+RETRY_BACKOFF_BASE_S = 2.0
+# A create reconciliation lists batches created since the attempt started, minus this slack
+# for clock skew between this machine and the API.
+RECONCILE_SKEW_S = 120
+
+
+class JudgeBatchError(RuntimeError):
+    """The judge batch could not be completed (retries ran out, or a create's outcome is
+    unknown). run.json (arms and judge state) is already persisted; the message names the
+    batch id when one is known."""
+
+
+class BatchRetriesExhausted(RuntimeError):
+    """`with_retry` gave up on a transient failure; `__cause__` is the last BatchError."""
+
+
+def _backoff_s(attempt, rand_fn):
+    return RETRY_BACKOFF_BASE_S * 2 ** (attempt - 1) * (0.5 + 0.5 * rand_fn())
+
+
+def with_retry(fn, sleep_fn, rand_fn=None, attempts=None):
+    """Call `fn()` up to `attempts` times, retrying only a transient BatchError (429, 5xx,
+    529, timeouts, connection errors). Any other exception, including a non-transient 4xx
+    BatchError, propagates at once. Raises BatchRetriesExhausted when the attempts run out."""
+    import random
+
+    from .providers import anthropic as anthropic_mod
+
+    rand_fn = rand_fn or random.random
+    attempts = attempts or RETRY_ATTEMPTS
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except anthropic_mod.BatchError as exc:
+            if not exc.transient:
+                raise
+            if attempt == attempts:
+                raise BatchRetriesExhausted(f"{exc} (gave up after {attempts} attempts)") from exc
+            sleep_fn(_backoff_s(attempt, rand_fn))
+
+
+class SubmitOutcomeUnknown(RuntimeError):
+    """A create timed out or failed after the server may have accepted it, and the batch list
+    could not settle whether it did. Retrying could submit (and bill) a second batch."""
+
+
+def create_with_retry(requests, api_key, sleep_fn, rand_fn=None, now_fn=None, attempts=None):
+    """Create a Message Batch, retrying transient failures without ever submitting twice.
+
+    The Message Batches docs describe no idempotency key for create, so a blind retry after
+    an unknown outcome could create a SECOND billed batch. What the docs do offer: "You can
+    list all Message Batches in your Workspace using the list endpoint" and "Ensure each
+    request in the batch has a unique `custom_id`". A listed batch carries `created_at` and
+    `request_counts` but not its custom_ids, so the match is by creation time (since this
+    attempt started, minus clock-skew slack) and total request count.
+
+    - HTTP 429: the request was rejected before any batch existed; retry directly.
+    - Any other transient failure (5xx, 529, timeout, dropped connection): the outcome is
+      unknown, so list recent batches first. Exactly one match: that is our batch, adopt it.
+      No match: nothing was created, retry. Two or more matches, or the list itself failing:
+      raise SubmitOutcomeUnknown and do NOT retry (a refused retry costs a re-run; a wrong
+      one costs a second batch).
+    - Any other 4xx propagates unchanged.
+    """
+    import datetime as _dt
+    import random
+
+    from .providers import anthropic as anthropic_mod
+
+    rand_fn = rand_fn or random.random
+    now_fn = now_fn or (lambda: _dt.datetime.now(_dt.timezone.utc))
+    attempts = attempts or RETRY_ATTEMPTS
+
+    def parse(ts):
+        return _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+
+    for attempt in range(1, attempts + 1):
+        since = now_fn() - _dt.timedelta(seconds=RECONCILE_SKEW_S)
+        try:
+            return anthropic_mod.create_batch(requests, api_key)
+        except anthropic_mod.BatchError as exc:
+            if not exc.transient:
+                raise
+            if exc.status != 429:
+                try:
+                    listed = anthropic_mod.list_batches(api_key)
+                except anthropic_mod.BatchError as list_exc:
+                    raise SubmitOutcomeUnknown(
+                        f"create_batch failed ({exc}) and the batch list could not be read ({list_exc}); "
+                        "not retrying, because the batch may exist"
+                    ) from exc
+                matches = [
+                    b for b in listed
+                    if parse(b.get("created_at") or "1970-01-01T00:00:00Z") >= since
+                    and sum((b.get("request_counts") or {}).values()) == len(requests)
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    raise SubmitOutcomeUnknown(
+                        f"create_batch failed ({exc}) and {len(matches)} recent batches of {len(requests)} requests exist "
+                        f"({', '.join(str(b.get('id')) for b in matches)}); not retrying, cannot tell which is ours"
+                    ) from exc
+            if attempt == attempts:
+                raise BatchRetriesExhausted(f"{exc} (gave up after {attempts} attempts)") from exc
+            sleep_fn(_backoff_s(attempt, rand_fn))
+
+
 JUDGE_PENDING_NOTE = "not judged: the judge batch has not completed"
 
 
 def run_judge_batch(
     suite, items, result_items, judge_id, judge_price, reuse, meter, run_dir, run_name, persist,
-    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None,
+    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None, rand_fn=None, now_fn=None,
 ):
     """`pinbench run --batch-judge`: judge the finished arms' outputs as ONE Message Batch.
 
@@ -387,9 +499,19 @@ def run_judge_batch(
     Order: (1) every pending slot gets an honest "not judged" placeholder error, (2) the cap
     is checked against the batch's whole estimate (a batch cannot be stopped midway), (3)
     `persist(judge_state, spent_judge, stopped_early)` writes run.json BEFORE the submit and
-    again once the id is known, so a crash or timeout never loses paid arm outputs, (4)
-    submit, write batch.json, wait. A batch that outlasts `max_wait_s` is left running and
-    its slots keep the placeholder error (the verdict is INCOMPLETE); nothing is guessed.
+    again once the id is known, so once the arms are done a crash, a timeout or a failed
+    batch never loses their paid outputs (a crash DURING the arm phase still loses it: the
+    arms are written only after they finish), (4) submit, write batch.json, wait. A batch
+    that outlasts `max_wait_s` is left running and its slots keep the placeholder error (the
+    verdict is INCOMPLETE); nothing is guessed.
+
+    Transient failures (429, 5xx, 529, timeouts, dropped connections) on create, poll and
+    results are retried `RETRY_ATTEMPTS` times with exponential backoff (`with_retry`); a
+    create whose outcome is unknown is reconciled first (`create_with_retry`). A batch whose
+    outcome or spend is unknown (timed out, polling or results failed after submit, submit
+    outcome unknown) records its judge spend as the reserved estimate, never 0, because it
+    may still bill; cost.py charges an unknown outcome at least its estimate for the same
+    reason. Retries running out raises `JudgeBatchError` after persisting.
     Returns (spent_judge, stopped_early); mutates `result_items`.
     """
     import os
@@ -455,9 +577,23 @@ def run_judge_batch(
     requests = build_judge_requests(pending, suite, judge_id, judge_price)
     custom_ids = [r["custom_id"] for r in requests]
     persist(state, 0.0, False)  # arms are on disk before anything is submitted
+
+    def _unresolved(status, note, exc, batch_id=None):
+        """A batch whose outcome or spend is unknown: keep the arms, mark the slots not
+        judged, record the reserved estimate as the judge spend (it may still bill), raise."""
+        state["status"] = status
+        state["spend_basis"] = "reserved_estimate"
+        _mark(note)
+        persist(state, total_est, False)
+        where = f"batch {batch_id} " if batch_id else ""
+        raise JudgeBatchError(f"judge {where}{status}: {exc}") from exc
+
     try:
-        batch_obj = anthropic_mod.create_batch(requests, api_key)
+        batch_obj = create_with_retry(requests, api_key, sleep_fn, rand_fn, now_fn)
+    except SubmitOutcomeUnknown as exc:
+        _unresolved("submit_outcome_unknown", f"not judged: judge batch submission outcome unknown: {exc}", exc)
     except Exception as exc:  # noqa: BLE001 - record the failed submit, then re-raise
+        # a definite failure: nothing was created, so nothing is spent
         state["status"] = "submit_failed"
         _mark(f"not judged: judge batch submission failed: {exc}")
         persist(state, 0.0, False)
@@ -471,15 +607,19 @@ def run_judge_batch(
 
     try:
         final, polls = wait_for_batch(
-            lambda: anthropic_mod.get_batch(batch_id, api_key), batch_id, poll_interval_s, max_wait_s, sleep_fn, print_fn,
+            lambda: with_retry(lambda: anthropic_mod.get_batch(batch_id, api_key), sleep_fn, rand_fn),
+            batch_id, poll_interval_s, max_wait_s, sleep_fn, print_fn,
         )
     except MaxWaitExceeded as exc:
         print_fn("")
         print(f"warning: {exc}", file=sys.stderr)
         state["status"] = "timed_out"
+        state["spend_basis"] = "reserved_estimate"
         _mark(f"not judged: judge batch {batch_id} still running after {max_wait_s}s")
-        persist(state, 0.0, False)
-        return 0.0, False
+        persist(state, total_est, False)
+        return total_est, False
+    except (BatchRetriesExhausted, anthropic_mod.BatchError) as exc:
+        _unresolved("poll_failed", f"not judged: polling judge batch {batch_id} failed: {exc}", exc, batch_id)
     except KeyboardInterrupt:
         print(
             f"\nbatch {batch_id} is still running (results kept 29 days). "
@@ -491,7 +631,12 @@ def run_judge_batch(
         raise
     print_fn("")
 
-    results = collect_results(anthropic_mod, providers_mod, batch_id, api_key, custom_ids)
+    try:
+        results = with_retry(
+            lambda: collect_results(anthropic_mod, providers_mod, batch_id, api_key, custom_ids), sleep_fn, rand_fn,
+        )
+    except (BatchRetriesExhausted, anthropic_mod.BatchError) as exc:
+        _unresolved("results_failed", f"not judged: fetching results of judge batch {batch_id} failed: {exc}", exc, batch_id)
     spent_judge = 0.0
     result_types = {}
     for index, item, arm, _output in pending:

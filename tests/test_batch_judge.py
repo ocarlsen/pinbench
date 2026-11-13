@@ -7,7 +7,10 @@ runner.py, report.py or cli.py (proven in the PR by reverting each in a scratch 
 
 from __future__ import annotations
 
+import datetime
+import io
 import json
+import urllib.error
 
 import pytest
 import yaml
@@ -17,6 +20,7 @@ from test_batch import (  # noqa: F401 - the fixtures must be importable to be u
     fake_http, no_sleep,
 )
 
+from pinbench import batch as batch_mod
 from pinbench import cost as cost_mod
 from pinbench import judge as judge_mod
 from pinbench import prices as prices_mod
@@ -64,9 +68,14 @@ def _args(suite_path, prices_path, *extra, incumbent="claude-sonnet-5-5", candid
             "--cap", "5.0", "--prices", str(prices_path), "--name", name, *extra]
 
 
-def _judge_lines(n, arms=("incumbent", "candidate"), input_tokens=100, output_tokens=10, extra=1, notes="fine"):
+def _judge_lines(n, arms=("incumbent", "candidate"), input_tokens=100, output_tokens=10, extra=1, notes="fine", per_arm=None):
+    """`per_arm` {arm: (extra, notes)} gives the two arms different verdicts."""
+    def text(i, arm):
+        e, nt = (per_arm or {}).get(arm, (extra, notes))
+        return _verdict(i, e, nt)
+
     return "\n".join(
-        _succeeded_line(f"{i:04d}-judge-{arm}", _verdict(i, extra, notes), input_tokens=input_tokens, output_tokens=output_tokens, model=JUDGE)
+        _succeeded_line(f"{i:04d}-judge-{arm}", text(i, arm), input_tokens=input_tokens, output_tokens=output_tokens, model=JUDGE)
         for i in range(n) for arm in arms
     )
 
@@ -177,7 +186,7 @@ def test_poll_interval_and_max_wait_are_used(tmp_path, monkeypatch, fake_http, g
     fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
     rc = _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge",
                                                "--poll-interval", "7", "--max-wait", "7"))
-    assert rc == 0
+    assert rc == 5
     assert no_sleep == [7]  # one sleep of the given interval, then the max-wait gives up
 
 
@@ -229,16 +238,23 @@ def test_skipped_arms_are_recorded_not_sent(tmp_path, monkeypatch, fake_http, ge
 # --- the cap is checked against arms spend + the whole judge batch BEFORE submitting --------
 
 def test_cap_reserve_refuses_the_batch_before_submit(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
-    # The candidate's actual cost (3M input tokens at $1/Mtok = $3) passes the per-call
-    # check but leaves no room for the judge batch under a $2 cap, though the pre-run
-    # estimate fit.
+    # The candidate's actual cost lands arms spend UNDER the cap, but by less than the judge
+    # batch's estimate, though the pre-run estimate fit. (Spend already over the cap would
+    # refuse even a zero-cost check, so it would not prove the estimate is reserved.)
     suite_path = _suite_file(tmp_path, n=1)
-    gemini_env.set_reply(GEMINI, "Q0?", providers.Reply(output="ok", input_tokens=3_000_000, output_tokens=2, latency_ms=1, stop_reason="end_turn"))
+    suite = suite_mod.load(suite_path)
+    batch_row = prices_mod.load(_prices_file(tmp_path)).rows[JUDGE].at_batch()
+    judge_est = 2 * cost_mod.estimate_judge_call_cost(suite, suite.items[0], batch_row)
+    cap = 2.0
+    inc_cost = (len("Answer briefly.") + len("Q0?")) * 2.0 / 1e6 + 4 * 10.0 / 1e6  # the fake adapter's default reply
+    cand_cost = cap - judge_est / 2 - inc_cost
+    gemini_env.set_reply(GEMINI, "Q0?", providers.Reply(output="ok", input_tokens=round(cand_cost * 1e6), output_tokens=0, latency_ms=1, stop_reason="end_turn"))
     args = _args(suite_path, _prices_file(tmp_path), "--batch-judge")
-    args[args.index("--cap") + 1] = "2.0"
+    args[args.index("--cap") + 1] = str(cap)
     assert _run_cli(tmp_path, monkeypatch, args) == 0
-    assert fake_http.create_posts == []
     run = _load(tmp_path)
+    assert run["spent_usd"]["total"] < cap < run["spent_usd"]["total"] + judge_est  # the setup holds
+    assert fake_http.create_posts == []
     assert run["stopped_early"] is True
     assert run["judge_batch"]["status"] == "not_submitted_cap"
     assert "exceed the cap" in run["items"][0]["judge"]["incumbent"]["error"]
@@ -272,10 +288,18 @@ def test_arms_persisted_before_submit(tmp_path, monkeypatch, fake_http, gemini_e
 def test_timeout_leaves_unjudged_records_and_incomplete_verdict(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep, capsys):
     fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4}))
     fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
-    args = _args(_suite_file(tmp_path), _prices_file(tmp_path), "--batch-judge", "--poll-interval", "1", "--max-wait", "1")
-    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    suite_path = _suite_file(tmp_path)
+    args = _args(suite_path, _prices_file(tmp_path), "--batch-judge", "--poll-interval", "1", "--max-wait", "1")
+    assert _run_cli(tmp_path, monkeypatch, args) == 5  # nonzero: the judge did not finish
     run = _load(tmp_path)
+    assert run["stopped_early"] is False  # the arms finished; only the judge is unresolved
     assert run["judge_batch"]["status"] == "timed_out"
+    # the batch still bills: its judge spend is the reserved estimate, never 0, computed here
+    suite = suite_mod.load(suite_path)
+    batch_row = prices_mod.load(tmp_path / "prices.yaml").rows[JUDGE].at_batch()
+    reserved = sum(cost_mod.estimate_judge_call_cost(suite, it, batch_row) for it in suite.items) * 2
+    assert run["spent_usd"]["judge"] == pytest.approx(reserved)
+    assert run["judge_batch"]["spend_basis"] == "reserved_estimate"
     assert run["judge_batch"]["id"] == JUDGE_BATCH
     for item in run["items"]:
         for arm in ("incumbent", "candidate"):
@@ -370,3 +394,273 @@ def test_judge_batch_site_meters_the_judge_estimate(tmp_path, monkeypatch, fake_
     run = _load(tmp_path)
     for arm in ("incumbent", "candidate"):
         assert run["items"][0]["judge"][arm]["cost_usd"] == pytest.approx(estimate)
+
+
+# ================= round 2: retries, timeout spend, arm-phase reserve, sharper tests =============
+
+def _http_error(code, body=b"overloaded"):
+    return urllib.error.HTTPError("https://api.anthropic.com/x", code, "err", {}, io.BytesIO(body))
+
+
+class Flaky:
+    """Wraps FakeBatchHTTP: per-endpoint queues of faults. An entry is an exception (raised
+    INSTEAD of the request reaching the fake), ("after", exc) (the fake handles the request,
+    the server 'accepted' it, then exc is raised), or None (pass through)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.faults = {"create": [], "get": [], "results": [], "list": []}
+        self.list_data = lambda: []
+        self.list_calls = 0
+
+    @staticmethod
+    def kind(req):
+        url, method = req.full_url, req.get_method()
+        if url.endswith("/results"):
+            return "results"
+        if "/v1/messages/batches?" in url:
+            return "list"
+        if method == "POST" and url.endswith("/v1/messages/batches"):
+            return "create"
+        if method == "GET":
+            return "get"
+        return "other"
+
+    def urlopen(self, req, timeout=None):
+        kind = self.kind(req)
+        if kind == "list":
+            self.list_calls += 1
+            if self.faults["list"]:
+                fault = self.faults["list"].pop(0)
+                if fault is not None:
+                    raise fault
+            return _FakeResponse(json.dumps({"data": self.list_data(), "has_more": False}).encode("utf-8"))
+        queue = self.faults.get(kind)
+        if queue:
+            fault = queue.pop(0)
+            if isinstance(fault, tuple):
+                self.inner.urlopen(req, timeout)
+                raise fault[1]
+            if fault is not None:
+                raise fault
+        return self.inner.urlopen(req, timeout)
+
+
+@pytest.fixture
+def flaky(monkeypatch, fake_http):
+    f = Flaky(fake_http)
+    monkeypatch.setattr(anthropic_provider.urllib.request, "urlopen", f.urlopen)
+    return f
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _listed(batch_id, count=4):
+    return {"id": batch_id, "created_at": _now(), "request_counts": {"processing": count, "succeeded": 0, "errored": 0}}
+
+
+def _run_default(tmp_path, monkeypatch, *extra, n=2):
+    return _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path, n=n), _prices_file(tmp_path), "--batch-judge", *extra))
+
+
+def _assert_backoff(sleeps, count):
+    assert len(sleeps) == count
+    for k, delay in enumerate(sleeps, start=1):
+        base = batch_mod.RETRY_BACKOFF_BASE_S * 2 ** (k - 1)
+        assert base * 0.5 <= delay <= base
+
+
+def test_create_retries_429_without_listing(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [_http_error(429), _http_error(429)]
+    assert _run_default(tmp_path, monkeypatch) == 0
+    assert len(fake_http.create_posts) == 1
+    assert flaky.list_calls == 0  # a 429 never created a batch
+    _assert_backoff(no_sleep, 2)
+
+
+def test_create_does_not_retry_other_4xx(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [_http_error(400, b"bad request")]
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert no_sleep == [] and fake_http.create_posts == []
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "submit_failed"  # persisted, not left "pending"
+    assert run["spent_usd"]["judge"] == 0.0
+    assert run["items"][0]["candidate"]["output"] == "echo:Q0?"
+    assert "submission failed" in run["items"][0]["judge"]["incumbent"]["error"]
+
+
+def test_create_unknown_outcome_adopts_the_listed_batch_not_a_second_submit(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [("after", TimeoutError("timed out"))]  # server accepted, reply lost
+    flaky.list_data = lambda: [_listed(JUDGE_BATCH), {"id": "old", "created_at": "2020-01-01T00:00:00Z", "request_counts": {"succeeded": 4}}]
+    assert _run_default(tmp_path, monkeypatch) == 0
+    assert len(fake_http.create_posts) == 1  # never submitted twice
+    assert flaky.list_calls == 1
+    assert _load(tmp_path)["judge_batch"]["id"] == JUDGE_BATCH
+
+
+def test_create_unknown_outcome_with_empty_list_retries(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [_http_error(529)]  # rejected before the fake saw it
+    assert _run_default(tmp_path, monkeypatch) == 0
+    assert flaky.list_calls == 1 and len(fake_http.create_posts) == 1
+    _assert_backoff(no_sleep, 1)
+
+
+def test_create_unknown_outcome_ambiguous_list_refuses_to_retry(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep, capsys):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [("after", TimeoutError("timed out"))]
+    flaky.list_data = lambda: [_listed("msgbatch_a"), _listed("msgbatch_b")]
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert len(fake_http.create_posts) == 1 and no_sleep == []
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "submit_outcome_unknown"
+    assert run["judge_batch"]["spend_basis"] == "reserved_estimate" and run["spent_usd"]["judge"] > 0
+    assert "msgbatch_a" in capsys.readouterr().err
+
+
+def test_create_unknown_outcome_with_unreadable_list_refuses_to_retry(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["create"] = [("after", TimeoutError("timed out"))]
+    flaky.faults["list"] = [_http_error(500)]
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert len(fake_http.create_posts) == 1
+    assert _load(tmp_path)["judge_batch"]["status"] == "submit_outcome_unknown"
+
+
+def test_poll_and_results_retry_transient_failures(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["get"] = [_http_error(503), TimeoutError("timed out")]
+    flaky.faults["results"] = [_http_error(529), ConnectionResetError("reset")]
+    assert _run_default(tmp_path, monkeypatch) == 0
+    assert _load(tmp_path)["judge_batch"]["status"] == "ended"
+    assert len(no_sleep) == 4
+
+
+def test_poll_retries_exhausted_persists_and_exits_nonzero(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep, capsys):
+    _script_judge_batch(fake_http)
+    flaky.faults["get"] = [_http_error(503)] * batch_mod.RETRY_ATTEMPTS
+    assert _run_default(tmp_path, monkeypatch) == 1
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "poll_failed" and run["judge_batch"]["id"] == JUDGE_BATCH
+    assert run["spent_usd"]["judge"] > 0
+    assert JUDGE_BATCH in capsys.readouterr().err
+    assert len(no_sleep) == batch_mod.RETRY_ATTEMPTS - 1
+
+
+def test_results_retries_exhausted_persists_and_exits_nonzero(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep, capsys):
+    _script_judge_batch(fake_http)
+    flaky.faults["results"] = [_http_error(500)] * batch_mod.RETRY_ATTEMPTS
+    assert _run_default(tmp_path, monkeypatch) == 1
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "results_failed"
+    assert "not judged" in run["items"][0]["judge"]["incumbent"]["error"]
+    assert JUDGE_BATCH in capsys.readouterr().err
+    assert json.loads((tmp_path / ".pinbench" / "runs" / "bj" / "batch.json").read_text())["judge"]["id"] == JUDGE_BATCH
+
+
+def test_non_transient_4xx_on_poll_is_not_retried(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    flaky.faults["get"] = [_http_error(404, b"not found")]
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert no_sleep == []
+
+
+# --- arm phase leaves room for the judge batch ---------------------------------------------
+
+def test_arm_phase_reserves_the_judge_batch_estimate(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    suite_path = _suite_file(tmp_path, n=2)
+    prices_path = _prices_file(tmp_path)
+    suite = suite_mod.load(suite_path)
+    prices = prices_mod.load(prices_path)
+    plan = runner_mod.plan(suite, "claude-sonnet-5-5", GEMINI, prices, batch_judge=True)
+    reserve = plan.estimate.judge.cost_usd
+    est_cand1 = plan.estimate.candidate.items[1].cost_usd
+    cap = 2.0
+    ok = lambda i, o: providers.Reply(output="ok", input_tokens=i, output_tokens=o, latency_ms=1, stop_reason="end_turn")
+    gemini_env.set_reply("claude-sonnet-5-5", "Q0?", ok(100, 10))
+    gemini_env.set_reply(GEMINI, "Q0?", ok(100, 10))
+    spent0 = (100 * 2.0 + 10 * 10.0) / 1e6 + (100 * 1.0 + 10 * 4.0) / 1e6
+    # After item 1's incumbent, the candidate call fits the cap by itself but not with the
+    # judge batch's estimate beside it.
+    inc1_cost = cap - est_cand1 - reserve / 2 - spent0
+    gemini_env.set_reply("claude-sonnet-5-5", "Q1?", ok(round(inc1_cost / 2.0 * 1e6), 0))
+    assert spent0 + inc1_cost + est_cand1 <= cap < spent0 + inc1_cost + est_cand1 + reserve
+    _script_judge_batch(fake_http, n=1)
+    args = _args(suite_path, prices_path, "--batch-judge")
+    args[args.index("--cap") + 1] = str(cap)
+    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    assert (GEMINI, "Q1?") not in gemini_env.calls  # stopped before the call that would strand the judge
+    run = _load(tmp_path)
+    assert run["stopped_early"] is True
+    assert run["items"][1]["candidate"] is None and run["items"][1]["incumbent"]["output"] == "ok"
+    # the finished item was still judged, as one batch of its two arms
+    assert sorted(r["custom_id"] for r in fake_http.create_posts[0]["requests"]) == ["0000-judge-candidate", "0000-judge-incumbent"]
+    assert run["judge_batch"]["status"] == "ended" and "judge" not in run["items"][1]
+
+
+# --- results map to the right arm; the meter is charged; state is persisted in order --------
+
+def test_each_arm_gets_its_own_verdict(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    _script_judge_batch(fake_http, per_arm={"incumbent": (1, "inc-note"), "candidate": (2, "cand-note")}, output_tokens=10)
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2, per_arm={"incumbent": (1, "inc-note"), "candidate": (2, "cand-note")})
+    assert _run_default(tmp_path, monkeypatch) == 0
+    for item in _load(tmp_path)["items"]:
+        assert (item["judge"]["incumbent"]["extra"], item["judge"]["incumbent"]["notes"]) == (1, "inc-note")
+        assert (item["judge"]["candidate"]["extra"], item["judge"]["candidate"]["notes"]) == (2, "cand-note")
+
+
+def test_judge_results_are_charged_against_the_cap(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep, capsys):
+    # 200M judge input tokens at the batch price ($0.05/Mtok) = $10 a call, far over the $5 cap
+    _script_judge_batch(fake_http, n=1, input_tokens=200_000_000)
+    assert _run_default(tmp_path, monkeypatch, n=1) == 0
+    run = _load(tmp_path)
+    assert run["judge_batch"]["cap_exceeded_after_results"] is True
+    assert run["spent_usd"]["judge"] == pytest.approx(20.0, rel=0.01)
+    assert "exceeded cap" in capsys.readouterr().err
+
+
+def test_run_json_carries_the_batch_id_as_soon_as_it_is_known(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    seen = []
+    fake_http.on_get = lambda batch_id: seen.append(_load(tmp_path)["judge_batch"])
+    assert _run_default(tmp_path, monkeypatch) == 0
+    assert seen[0]["id"] == JUDGE_BATCH and seen[0]["status"] == "submitted"
+
+
+# --- the real combination: a --batch source reused under --batch-judge ----------------------
+
+def test_batch_source_reused_under_batch_judge(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    prices_path = _prices_file(tmp_path)
+    suite_path = _suite_file(tmp_path)
+    arms_id = "msgbatch_arms"
+    fake_http.create_responses = [_batch_obj(arms_id, "in_progress", {"processing": 4}), _batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
+    fake_http.status_sequences[arms_id] = [_batch_obj(arms_id, "ended", {"succeeded": 4})]
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 4})]
+    fake_http.results[arms_id] = "\n".join(
+        _succeeded_line(f"000{i}-{arm}", f"{arm}-{i}", input_tokens=10, output_tokens=5) for i in range(2) for arm in ("incumbent", "candidate")
+    )
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2, input_tokens=200, output_tokens=20, per_arm={"incumbent": (3, "src-inc"), "candidate": (4, "src-cand")})
+    rc = _run_cli(tmp_path, monkeypatch, ["run", str(suite_path), "--incumbent", "claude-sonnet-5-5", "--candidate", "claude-haiku-5-5",
+                                          "--cap", "5.0", "--prices", str(prices_path), "--batch", "--name", "src"])
+    assert rc == 0
+    fake_http.create_posts.clear()
+    _script_judge_batch(fake_http, batch_id="msgbatch_judge2", arms=("candidate",), per_arm={"candidate": (9, "new-cand")})
+    rc = _run_cli(tmp_path, monkeypatch, _args(suite_path, prices_path, "--batch-judge", "--reuse-incumbent", "src", name="re"))
+    assert rc == 0
+    src, new = _load(tmp_path, "src"), _load(tmp_path, "re")
+    assert src["batch"]["price_multiplier"]["claude-sonnet-5-5"] == 0.5
+    assert "batch" not in new and new["judge_batch"]["id"] == "msgbatch_judge2"
+    assert sorted(r["custom_id"] for r in fake_http.create_posts[0]["requests"]) == ["0000-judge-candidate", "0001-judge-candidate"]
+    for i in range(2):
+        carried = new["items"][i]["judge"]["incumbent"]
+        assert (carried["extra"], carried["notes"]) == (3, "src-inc")
+        # the source's judge was batch-priced (x0.5): back to the sync price
+        assert carried["cost_usd"] == pytest.approx(src["items"][i]["judge"]["incumbent"]["cost_usd"] / 0.5)
+        # the source's arm was batch-priced too: repriced from tokens at this run's sync rate
+        assert new["items"][i]["incumbent"]["cost_usd"] == pytest.approx((10 * 2.0 + 5 * 10.0) / 1e6)
+        assert (new["items"][i]["judge"]["candidate"]["extra"], new["items"][i]["judge"]["candidate"]["notes"]) == (9, "new-cand")

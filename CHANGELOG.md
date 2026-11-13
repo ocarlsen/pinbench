@@ -17,6 +17,12 @@ records marked "not judged" (the verdict is INCOMPLETE). `run.json` records `jud
 `judge_batch.price_multiplier` while treating its arm cost as sync-priced. Works with
 `--reuse-incumbent` (only the candidate's judge calls are batched). The report header notes
 `judge: batched (id ...)`.
+Batch API calls (create, poll, results) retry transient failures (429, 5xx, 529, timeouts,
+connection errors) with bounded exponential backoff, never other 4xx. A create with an unknown
+outcome is reconciled against the batch list before any retry (no idempotency key exists), and
+refuses to retry if that is ambiguous. A judge batch that times out now exits 5 and records its
+spend as the reserved estimate, not 0. The arm phase reserves the judge batch's estimate under
+the cap, so the arms stop early instead of stranding the judging.
 
 The cost meter no longer under-charges an errored reply that carries billed tokens (issue #20,
 follow-up to the Gemini continuation change). `cost.actual_call_cost` now takes the call's
