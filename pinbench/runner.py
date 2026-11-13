@@ -125,9 +125,10 @@ def _source_is_batch(source):
 
 def _reprice_arm(arm_rec, price):
     """Copy of a source arm record with cost_usd recomputed from its recorded tokens at this
-    run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm with an
-    error or no recorded tokens has nothing to recompute from, so its recorded cost carries
-    over unchanged."""
+    run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm that
+    errored, or that lacks either recorded token count, is NOT repriced: its recorded cost
+    (which may include billed tokens, metered by cost.actual_call_cost at the source run's
+    price) carries over unchanged, with no batch-multiplier rescale."""
     rec = dict(arm_rec)
     rec["reused_cost_usd"] = arm_rec.get("cost_usd")
     in_tok, out_tok = arm_rec.get("input_tokens"), arm_rec.get("output_tokens")
@@ -376,7 +377,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                     break
                 inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
                 inc_stats.record(inc_reply)
-                inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
+                inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, inc_estimates[item.id]), inc_estimates[item.id])
                 spent_incumbent += inc_cost
 
             if not meter.check(cand_estimates[item.id]):
@@ -385,7 +386,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 break
             cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s)
             cand_stats.record(cand_reply)
-            cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
+            cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price, cand_estimates[item.id]), cand_estimates[item.id])
             spent_candidate += cand_cost
 
             judge_record = None
