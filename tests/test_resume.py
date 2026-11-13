@@ -918,8 +918,6 @@ def test_hold_judge_on_errors_resume_fixes_the_arm_then_submits_once(tmp_path, m
     assert len(fake_http.create_posts) == 1
     rec = env.load("bj")
     assert rec["status"] == "complete" and rec["judge_batch"]["status"] == "ended"
-    # resuming without the flag it was recorded with is a different measurement
-    assert _run_cli(tmp_path, monkeypatch, args[:-3] + ["--resume", "bj"]) == 2
 
 
 def test_hold_judge_on_errors_needs_batch_judge(tmp_path, monkeypatch, script):
@@ -930,13 +928,20 @@ def test_hold_judge_on_errors_needs_batch_judge(tmp_path, monkeypatch, script):
         env.run(hold_judge_on_errors=True)
 
 
-def test_resume_comparability_refuses_a_hold_flag_mismatch(tmp_path, monkeypatch, fake_http, gemini_env, script):
+def test_resume_comparability_refuses_adding_the_hold_flag(tmp_path, monkeypatch, fake_http, gemini_env, script):
+    # Adding the hold to a run recorded without it is refused. Dropping it is allowed: see
+    # test_dropping_the_hold_on_resume_submits_once_skips_the_errored_arm_and_records_it.
     env = Env(tmp_path, n=2)
     script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
     _run_cli(tmp_path, monkeypatch, _hold_args(env))
+    path = tmp_path / ".pinbench" / "runs" / "bj" / "run.json"
+    rec = json.loads(path.read_text())
+    rec["run_modes"]["hold_judge_on_errors"] = False  # a run recorded without the hold
+    path.write_text(json.dumps(rec))
     script.reset()
     with pytest.raises(runner_mod.PlanRefused, match="--hold-judge-on-errors differs"):
-        env.run(name=None, resume="bj", batch_judge=True)
+        env.run(name=None, resume="bj", batch_judge=True, hold_judge_on_errors=True)
+    assert script.arm_calls == [] and fake_http.create_posts == []
 
 
 def test_a_lower_cap_on_resume_still_collects_the_recorded_batch(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
@@ -952,3 +957,127 @@ def test_a_lower_cap_on_resume_still_collects_the_recorded_batch(tmp_path, monke
     assert _run_cli(tmp_path, monkeypatch, args) == 0
     out = env.load("bj")
     assert len(fake_http.create_posts) == 1 and out["status"] == "complete" and out["judge_batch"]["id"] == JUDGE_BATCH
+
+
+# --- dropping --hold-judge-on-errors on a resume (follow-up to #28, issue #30) ----------------
+
+def _failing_cand_q1(script):
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+
+
+def _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script):
+    env = Env(tmp_path, n=2)
+    _failing_cand_q1(script)
+    assert _run_cli(tmp_path, monkeypatch, _hold_args(env)) == resume_mod.EXIT_QUOTA_STOP
+    return env
+
+
+def test_dropping_the_hold_on_resume_submits_once_skips_the_errored_arm_and_records_it(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    script.reset()
+    _failing_cand_q1(script)  # the item keeps failing on the resume too
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 3}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 3})]
+    fake_http.results[JUDGE_BATCH] = "\n".join(line for line in _judge_lines(2).split("\n") if "0001-judge-candidate" not in line)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0  # without --hold-judge-on-errors
+    assert script.arm_calls == [(CAND, "Q1?")]  # the errored arm was re-run once, as any resume does
+    assert len(fake_http.create_posts) == 1
+    rec = env.load("bj")
+    assert rec["status"] == "stopped" and rec["stop_reason"] == "arm_errors_judged"  # final, not resumable
+    assert rec["judge_batch"]["status"] == "ended"
+    assert rec["run_modes"]["hold_judge_on_errors"] is False
+    assert rec["items"][1]["judge"]["candidate"]["skipped"]  # the errored arm was skipped, not judged
+    assert rec["resumes"]["history"][-1]["hold_released_at"] == rec["resumes"]["history"][-1]["resumed_at"]
+    capsys.readouterr()
+    cli_mod.main(["report", "bj", "--state", env.state])
+    out = capsys.readouterr().out
+    assert "judge batch was released with 1 arm error(s) still present" in out
+    assert "cannot be resumed" in out
+
+
+def test_held_run_message_names_the_escape(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    err = capsys.readouterr().err
+    assert "if an item keeps failing, resume without --hold-judge-on-errors to judge the rest" in err
+
+
+# --- round 2: hold-release provenance and report wording --------------------------------------
+
+def _err500():
+    return providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500)
+
+
+def _batch_ended_without(fake_http, n, skip_ids, succeeded):
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": succeeded}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": succeeded})]
+    fake_http.results[JUDGE_BATCH] = "\n".join(l for l in _judge_lines(n).split("\n") if not any(s in l for s in skip_ids))
+
+
+def _report_out(tmp_path, monkeypatch, env, capsys):
+    capsys.readouterr()
+    monkeypatch.chdir(tmp_path)
+    cli_mod.main(["report", "bj", "--state", env.state])
+    return capsys.readouterr().out
+
+
+def test_a_never_held_resume_records_no_release_and_the_report_has_no_line(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = _timed_out_run(tmp_path, monkeypatch, fake_http)
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 4})]
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    rec = env.load("bj")
+    assert "hold_released_at" not in rec["resumes"]["history"][-1]
+    assert "hold" not in _report_out(tmp_path, monkeypatch, env, capsys).lower()
+
+
+def test_release_count_covers_both_arms(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = Env(tmp_path, n=3)
+    script.on(CAND, "Q1?", _err500)
+    script.on(INC, "Q2?", _err500)
+    assert _run_cli(tmp_path, monkeypatch, _hold_args(env)) == resume_mod.EXIT_QUOTA_STOP
+    script.reset()
+    script.on(CAND, "Q1?", _err500)
+    script.on(INC, "Q2?", _err500)
+    _batch_ended_without(fake_http, 3, ("0001-judge-candidate", "0002-judge-incumbent"), 4)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    assert "released with 2 arm error(s) still present" in _report_out(tmp_path, monkeypatch, env, capsys)
+
+
+def test_a_release_with_no_errors_left_says_zero(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    # Documented choice: the line is kept and says 0 (the hold was released, nothing was skipped).
+    env = _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    script.reset()  # the arm succeeds on the re-run
+    _script_judge_batch(fake_http, n=2)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    assert env.load("bj")["status"] == "complete"
+    out = _report_out(tmp_path, monkeypatch, env, capsys)
+    assert "hold was released at" in out and "released with 0 arm error(s) still present" in out
+
+
+def test_release_then_quota_stop_claims_no_batch_and_a_later_resume_keeps_the_first_release(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    script.reset()
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 429: quota", status_code=429))
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == resume_mod.EXIT_QUOTA_STOP
+    assert fake_http.create_posts == []
+    out = _report_out(tmp_path, monkeypatch, env, capsys)
+    assert "hold was released at" in out and "judge batch was released" not in out and "skipped, not judged" not in out
+    first = env.load("bj")["resumes"]["history"][0]["hold_released_at"]
+    script.reset()
+    _script_judge_batch(fake_http, n=2)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    hist = env.load("bj")["resumes"]["history"]
+    assert hist[0]["hold_released_at"] == first and "hold_released_at" not in hist[1]
+    out = _report_out(tmp_path, monkeypatch, env, capsys)
+    assert f"released at {first}." in out and "released with 0 arm error(s)" in out
+
+
+def test_collect_only_resume_does_not_record_a_release(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
+    env = Env(tmp_path, n=2)
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 4})]
+    assert _run_cli(tmp_path, monkeypatch, _hold_args(env, "--poll-interval", "1", "--max-wait", "1")) == 5
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 4})]
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0  # the batch went out under the hold
+    assert "hold_released_at" not in env.load("bj")["resumes"]["history"][-1]

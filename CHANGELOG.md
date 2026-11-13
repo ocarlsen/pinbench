@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+`run --resume` may now drop `--hold-judge-on-errors` (adding it stays refused). A held run whose candidate
+item errors every time could never submit its judge batch through the CLI: resuming with the flag
+held it again and resuming without it was refused. Dropping it re-runs the errored arms once, then
+submits the batch for the arms that did not error (errored arms recorded as skipped, final stop
+`arm_errors_judged`), records the release (`run_modes.hold_judge_on_errors` false, `hold_released_at`
+in the resume history), and the report says the batch was released with N arm error(s)
+still present. The held-run stop message now names this escape.
+
 `run` survives a crash or an exhausted quota, and can be resumed. A sync run now writes `run.json`
 after every item (atomic, `status: in_progress`), so a kill at hour 5 keeps every finished item;
 before, it wrote once at the end. SIGTERM, SIGHUP and SIGINT let the call in flight return, persist
