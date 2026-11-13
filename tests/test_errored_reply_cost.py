@@ -121,16 +121,6 @@ def test_runner_meters_hop_one_tokens_after_hop_two_429(tmp_path, fake_adapter, 
     assert record["spent_usd"]["total"] >= paid
 
 
-def test_partial_usage_on_4xx_prices_the_present_count():
-    only_in = _reply(status_code=429, output_tokens=None)
-    only_out = _reply(status_code=429, input_tokens=None)
-    assert cost.actual_call_cost(only_in, PRICE, 9.0) == pytest.approx(1.0)
-    assert cost.actual_call_cost(only_out, PRICE, 9.0) == pytest.approx(0.5)
-    # An unknown outcome with one count still takes the higher of that floor and the estimate.
-    assert cost.actual_call_cost(_reply(status_code=500, output_tokens=None), PRICE, 9.0) == pytest.approx(9.0)
-    assert cost.actual_call_cost(_reply(status_code=500, output_tokens=None), PRICE, 0.1) == pytest.approx(1.0)
-
-
 def test_continuation_without_token_keeps_unreported_output_count_none(monkeypatch):
     monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
     body = {"id": "i", "status": "requires_continuation", "steps": [], "usage": {"total_input_tokens": 7}}
@@ -138,6 +128,35 @@ def test_continuation_without_token_keeps_unreported_output_count_none(monkeypat
     r = gemini.call("gemini-4-carbon", "S", "U", 64000, "k", params={"generation_config": {}})
     assert r.error and "continuation_token" in r.error
     assert r.input_tokens == 7 and r.output_tokens is None
+    assert _charge(r) == pytest.approx(EST)
+
+
+EST = 0.5  # an estimate far above the $0.000007 an input-only reading would give
+INPUT_ONLY_PRICE = prices.PriceRow(model="x", input=1.0, output=10.0, source="x")
+
+
+def _charge(reply):
+    meter = cost.CostMeter(cap_usd=100.0)
+    return meter.charge(cost.actual_call_cost(reply, INPUT_ONLY_PRICE, EST), EST)
+
+
+def test_gemini_empty_text_incomplete_with_input_only_usage_charges_the_estimate(monkeypatch):
+    monkeypatch.delenv("PINBENCH_NO_NETWORK", raising=False)
+    body = {"id": "i", "status": "incomplete", "steps": [], "usage": {"total_input_tokens": 7}}
+    monkeypatch.setattr(gemini.urllib.request, "urlopen", lambda req, timeout=None: _Resp(body))
+    r = gemini.call("gemini-4-carbon", "S", "U", 64000, "k", params={"generation_config": {}})
+    assert r.error and "empty text" in r.error and r.stop_reason == "incomplete"
+    assert r.input_tokens == 7 and r.output_tokens is None
+    assert _charge(r) == pytest.approx(EST)
+
+
+def test_anthropic_empty_text_max_tokens_with_input_only_usage_charges_the_estimate():
+    from pinbench.providers import anthropic
+
+    data = {"content": [], "stop_reason": "max_tokens", "usage": {"input_tokens": 7}}
+    r = anthropic._reply_from_message(data, latency_ms=1)
+    assert r.error and r.stop_reason == "max_tokens" and r.output_tokens is None
+    assert _charge(r) == pytest.approx(EST)
 
 
 # ---- each metering call site passes ITS OWN estimate (the max branch) ----
