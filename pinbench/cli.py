@@ -2,7 +2,8 @@
 
 Refuses to do: let any subcommand touch the network or write a pin outside the documented
 exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded, 4 a `run` arm had zero
-successes, 5 a `--batch-judge` batch timed out). A `run` with SOME but not all items completed on both arms still exits 0 (a
+successes, 5 a `--batch-judge` batch timed out, 6 a `run` stopped on a quota or rate limit and
+can be resumed, 129/130/143 a `run` stopped by SIGHUP/SIGINT/SIGTERM and can be resumed). A `run` with SOME but not all items completed on both arms still exits 0 (a
 printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure. A
 `run` arm with any truncated output (the model hit max_output_tokens) also still exits 0,
 with a loud warning naming the count -- `report` is where truncation becomes a hard
@@ -12,6 +13,7 @@ INCOMPLETE, and `vote` refuses to show a truncated output unless --allow-truncat
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 import webbrowser
 from pathlib import Path
@@ -23,6 +25,7 @@ from . import config as config_mod
 from . import prices as prices_mod
 from . import registry as registry_mod
 from . import report as report_mod
+from . import resume as resume_mod
 from . import runner as runner_mod
 from . import scoring as scoring_mod
 from . import watch as watch_mod
@@ -136,6 +139,8 @@ def cmd_run(args):
             poll_interval_s=args.poll_interval,
             max_wait_s=args.max_wait,
             timeout_s=args.timeout_s,
+            resume=args.resume,
+            hold_judge_on_errors=args.hold_judge_on_errors,
         )
     except runner_mod.RunCapExceeded as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -148,6 +153,17 @@ def cmd_run(args):
     print(f"items completed: {record['items_completed']}/{record['items_total']}" + ("  STOPPED EARLY" if record["stopped_early"] else ""))
 
     zero_success_arms, truncated_arms = _print_arm_lines(record)
+    stop_reason = record.get("stop_reason") or ""
+    not_submitted = stop_reason == "judge_batch_not_submitted"
+    if record.get("status") == "stopped" and (stop_reason == resume_mod.STOP_QUOTA or stop_reason.startswith("signal:") or not_submitted):
+        if stop_reason == resume_mod.STOP_QUOTA:
+            why = "the provider kept returning 429 / quota exhausted after retries"
+        elif not_submitted:
+            why = f"the judge batch was not submitted ({(record.get('judge_batch') or {}).get('reason')}); --hold-judge-on-errors submits it only over a finished arm phase with no arm errors"
+        else:
+            why = f"stopped by {record.get('stop_signal')}"
+        print(f"stopped: {why}. Every finished item is saved. Resume with:\n  {_resume_command(args, record['run_name'])}", file=sys.stderr)
+        return resume_mod.exit_code_for_signal(record["stop_signal"]) if stop_reason.startswith("signal:") else resume_mod.EXIT_QUOTA_STOP
     if zero_success_arms:
         print(f"error: zero successes on: {', '.join(zero_success_arms)}", file=sys.stderr)
         return 4
@@ -175,6 +191,25 @@ def cmd_run(args):
         )
         return 5
     return 0
+
+
+def _resume_command(args, run_name):
+    """The exact command that continues this run: same suite and arms, same flags, --resume NAME."""
+    parts = ["pinbench", "run", args.suite, "--incumbent", args.incumbent, "--candidate", args.candidate]
+    for flag, value in (("--cap", args.cap), ("--limit", args.limit), ("--prices", args.prices), ("--state", args.state),
+                        ("--reuse-incumbent", args.reuse_incumbent), ("--config", args.config)):
+        if value is not None:
+            parts += [flag, str(value)]
+    if args.allow_self_judge:
+        parts.append("--allow-self-judge")
+    if args.batch_judge:
+        parts.append("--batch-judge")
+    if args.hold_judge_on_errors:
+        parts.append("--hold-judge-on-errors")
+    if args.timeout_s != runner_mod.DEFAULT_TIMEOUT_S:
+        parts += ["--timeout", str(args.timeout_s)]
+    parts += ["--resume", run_name]
+    return " ".join(shlex.quote(p) for p in parts)
 
 
 def _print_arm_lines(record):
@@ -278,6 +313,16 @@ def cmd_report(args):
 
     run_dir = _run_dir(args.state, args.run_name)
     (run_dir / "report.md").write_text(report_mod.render(run, suite, result, fmt="md"))
+    if run.get("status") not in (None, "complete"):
+        # Never a verdict.json (the thing `bump` trusts) for a run that is not finished. A
+        # checkpoint of a run in progress is a refusal (exit 1); a stopped run's report is
+        # still shown, its verdict INCOMPLETE, and exits 0 as an errored run always has.
+        print(
+            f"note: run status is {run.get('status')!r}, not complete; no verdict.json was written. "
+            + (resume_mod.final_stop_text(run) if run.get("stop_reason") in resume_mod.FINAL_STOPS else f"Finish it with pinbench run ... --resume {run['run_name']}"),
+            file=sys.stderr,
+        )
+        return 1 if run.get("status") == "in_progress" else 0
     report_mod.write_verdict_record(run_dir, run, result, votes_path=args.votes)
     return 0
 
@@ -379,7 +424,9 @@ def build_parser():
 
     p_run = sub.add_parser("run", help="run both arms over a suite")
     _add_arm_args(p_run)
-    p_run.add_argument("--name", default=None)
+    p_run.add_argument("--name", default=None, help="run directory name (default: suite-UTCstamp-random); refused if runs/NAME/run.json exists unless --resume NAME")
+    p_run.add_argument("--hold-judge-on-errors", action="store_true", dest="hold_judge_on_errors", help="with --batch-judge: submit the judge batch only if the arm phase finished with every arm succeeded or truncated; otherwise stop resumable (exit 6) and print the resume command")
+    p_run.add_argument("--resume", default=None, metavar="NAME", help="continue the stopped or crashed run NAME: skips finished items, re-runs errored and never-attempted ones, counts spend so far against --cap; refuses unless suite, arms, request params, judge and reuse source match what the run recorded")
     p_run.add_argument("--timeout", type=_positive_int, default=runner_mod.DEFAULT_TIMEOUT_S, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
     p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch or --batch-judge)")
     p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch or --batch-judge)")
@@ -433,6 +480,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+    except resume_mod.RunInterrupted as exc:
+        print(f"interrupted by {exc}: finished items are saved in run.json; continue with --resume", file=sys.stderr)
+        return 128 + exc.signum
     except KeyboardInterrupt:
         # A batch left running during `run --batch` prints its own ids/cancel-instructions
         # (pinbench.batch.run_batch) before this unwinds; nothing further to say here.

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+`run` survives a crash or an exhausted quota, and can be resumed. A sync run now writes `run.json`
+after every item (atomic, `status: in_progress`), so a kill at hour 5 keeps every finished item;
+before, it wrote once at the end. SIGTERM, SIGHUP and SIGINT let the call in flight return, persist
+and exit 143, 129 or 130 (a second signal abandons the call). `run` refuses a `--name` whose
+`run.json` exists (it silently overwrote it) unless `--resume NAME` is given; default names gain a
+random suffix. An arm or sync judge call that is HTTP 429 or quota-exhausted is retried with bounded
+backoff (billed tokens on failed attempts are charged), then the run stops with `stop_reason`
+`quota_or_rate_limit`, prints its exact resume command and exits 6. `run --resume NAME` continues a
+stopped or crashed run: it refuses unless suite, arms, request params, judge, reuse source and batch
+flags match what the run recorded, keeps finished arms and reused-incumbent slots, re-runs errored
+and never-attempted arms (truncated outputs are kept, not re-run), and counts spend so far against
+`--cap`. A `--batch-judge` run resumes judge-only: a recorded batch id is polled and collected
+(arms kept as recorded), never re-submitted; an unknown submit outcome is refused (check the
+Anthropic console). A run is `complete` only when every arm succeeded or truncated; otherwise it is
+`stopped` and `report` writes no `verdict.json` (an `in_progress` checkpoint exits 1). An abandoned
+call is charged at its estimate, `run.lock` stops two processes sharing a run, and `run.json` is
+fsynced. Exit codes 6 and 129/130/143 are new. The report header notes a resumed or in-progress run.
+
 `run --batch-judge` / `plan --batch-judge`: run the arms synchronously, then send every judge call
 as one Anthropic Message Batch at the judge row's `batch_multiplier`. A judged run with a
 non-Anthropic arm (Gemini) cannot use `--batch`, which is all-or-nothing and Anthropic-only, so its
@@ -21,8 +39,7 @@ Batch API calls (create, poll, results) retry transient failures (429, 5xx, 529,
 connection errors) with bounded exponential backoff, never other 4xx or a malformed result. A
 create is retried only after a 429 (no batch was created); any other transient create failure is
 an unknown outcome, never re-sent or adopted, recorded as `submit_outcome_unknown` at the
-reserved estimate with exit 1 (check the Anthropic console; judge-only resume of a recorded batch
-id is planned in a later PR). A judge batch that times out now exits 5 and records its
+reserved estimate with exit 1 (check the Anthropic console, then `run --resume`). A judge batch that times out now exits 5 and records its
 spend as the reserved estimate, not 0. The arm phase reserves the judge batch's estimate under
 the cap, so the arms stop early instead of stranding the judging.
 
