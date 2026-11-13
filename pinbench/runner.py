@@ -906,7 +906,8 @@ def _run(
             "resumed_at": resumed_at, "items_recorded_before": len(prior.get("items", [])),
             "spent_usd_before": spent.get("total"), "prior_status": prior["status"], "prior_stop_reason": prior.get("stop_reason"),
         }
-        if (prior.get("run_modes") or {}).get("hold_judge_on_errors") and not hold_judge_on_errors:
+        if (prior.get("run_modes") or {}).get("hold_judge_on_errors") and not hold_judge_on_errors and not attach_id:
+            # (not on a collect-only resume: that batch went out under the hold.)
             # run_modes.hold_judge_on_errors is recorded false from here on; this keeps the trail.
             entry["hold_released_at"] = resumed_at
         resumes = {"count": prev_resumes["count"] + 1, "history": prev_resumes["history"] + [entry]}

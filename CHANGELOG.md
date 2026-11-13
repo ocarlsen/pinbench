@@ -7,7 +7,7 @@ item errors every time could never submit its judge batch through the CLI: resum
 held it again and resuming without it was refused. Dropping it re-runs the errored arms once, then
 submits the batch for the arms that did not error (errored arms recorded as skipped, final stop
 `arm_errors_judged`), records the release (`run_modes.hold_judge_on_errors` false, `hold_released_at`
-in the resume history), and the report says the batch was released with N candidate arm error(s)
+in the resume history), and the report says the batch was released with N arm error(s)
 still present. The held-run stop message now names this escape.
 
 `run` survives a crash or an exhausted quota, and can be resumed. A sync run now writes `run.json`
