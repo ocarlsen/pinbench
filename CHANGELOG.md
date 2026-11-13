@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Gemini adapter follows `status: requires_continuation`. A non-streaming hop stops at 32,768
+tokens on gemini-4-carbon and gemini-4-argon (docs: aistudio.google.com/docs/long-decode), and a
+live run at thinking_level medium came back after 32,765 thought tokens with no text, which was
+recorded as an empty-output error. `call()` now resends the same request plus the response's
+`continuation_token` until the status changes, joins visible text, and sums input, visible and
+thought tokens across hops (every hop is billed). The loop stops at the summed
+`max_output_tokens` or after `ceil(max_output_tokens / 32768) + 1` hops and records stop reason
+`incomplete`, which scoring already counts as truncation. The per-call `timeout` applies per hop.
+A hop that fails after earlier hops succeeded returns the error with the summed tokens. A
+single-hop call is unchanged.
+
 `run --reuse-incumbent RUN` / `plan --reuse-incumbent RUN` (issue #17): reuse a fixed incumbent's
 stored outputs and judge records from an earlier judged run instead of paying for them again.
 The candidate and its judge calls run as usual; `spent_usd.incumbent` is 0 and `plan` estimates

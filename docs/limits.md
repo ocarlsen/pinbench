@@ -8,6 +8,14 @@ What pinbench does not do, and the model-specific behavior it leaves to the regi
   entry each in `ADAPTERS` and `ENV_KEYS` and one prefix line in `provider_for_id`. The
   adapters use plain `urllib` so the stubbing seam is obvious and the dependency list stays at
   one line; the official SDKs are a drop-in swap behind `providers/`.
+- Gemini continuation: a non-streaming Gemini hop is capped (32,768 tokens on gemini-4-carbon
+  and gemini-4-argon), so the adapter follows `status: requires_continuation` by resending the
+  prompt with the `continuation_token`, up to `ceil(max_output_tokens / 32768) + 1` hops or until
+  the summed thinking+output reaches `max_output_tokens`; either bound records the output as
+  truncated. Usage is summed per hop, which assumes each hop's `usage` is its own (the docs are
+  ambiguous), and cached input tokens are billed as ordinary input, so Gemini input cost is an
+  upper bound. An error after a paid hop keeps its summed tokens on the reply, but the cost
+  meter charges an errored reply at the estimate (or $0 for an HTTP 4xx), not from those tokens.
 - Label matching is exact, contains, or regex, or a fixed LLM judge scoring recall against a
   rubric. There is no fourth mode, and a judge suite does not also support `expect`-based
   labels on the same items.
