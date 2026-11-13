@@ -64,7 +64,7 @@ def cmd_plan(args):
     try:
         result = runner_mod.plan(
             suite, args.incumbent, args.candidate, prices, cap_usd=cap_usd, limit=args.limit,
-            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge, batch=args.batch,
+            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge, batch=args.batch, reuse_incumbent=args.reuse_incumbent,
         )
     except runner_mod.PlanRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -77,6 +77,8 @@ def cmd_plan(args):
             f"{label:<9} {arm.model_id:<24} {len(arm.items):>3} items  est ${arm.cost_usd:.4f}  "
             f"(${disp_price.input:.2f}/${disp_price.output:.2f} per Mtok)"
         )
+        if label == "incumbent" and result.reuse is not None:
+            line += f"  [reused from {result.reuse.run_name}: no calls, $0]"
         if args.batch:
             line += f"  [batch]  batch_multiplier {price.batch_multiplier} (prices.yaml)"
         print(line)
@@ -128,6 +130,7 @@ def cmd_run(args):
             allow_self_judge=args.allow_self_judge,
             effective_config=effective,
             batch=args.batch,
+            reuse_incumbent=args.reuse_incumbent,
             poll_interval_s=args.poll_interval,
             max_wait_s=args.max_wait,
             timeout_s=args.timeout_s,
@@ -174,6 +177,8 @@ def _print_arm_lines(record):
         succeeded = record["items_succeeded"][arm]
         truncated = scoring_mod.truncated_count(record, arm)
         line = f"{arm}: {succeeded}/{attempted} succeeded"
+        if arm == "incumbent" and record.get("reused_incumbent"):
+            line += f" (reused from {record['reused_incumbent']['run']}, no calls made)"
         if truncated:
             line += f", {truncated} truncated"
         if succeeded < attempted:
@@ -337,6 +342,10 @@ def _add_arm_args(p):
     p.add_argument(
         "--batch", action="store_true",
         help="send every Anthropic arm (and judge, if any) as one Message Batch at the batch discount; Anthropic-only",
+    )
+    p.add_argument(
+        "--reuse-incumbent", default=None, metavar="RUN",
+        help="reuse the incumbent's stored outputs and judge records from run RUN instead of calling it again; refuses unless suite, judge and request params match (not with --limit or --batch)",
     )
     _add_config_arg(p)
 
