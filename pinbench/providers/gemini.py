@@ -203,7 +203,7 @@ def call(model_id, system, user_input, max_tokens, api_key, params=None, timeout
         token = interaction.get("continuation_token")
         if not token:
             latency_ms = int((time.monotonic() - started) * 1000)
-            billed = (visible_total or 0) + (thoughts_total or 0)
+            billed = None if visible_total is None and thoughts_total is None else (visible_total or 0) + (thoughts_total or 0)
             return Reply(
                 output=None, input_tokens=input_tokens, output_tokens=billed, latency_ms=latency_ms,
                 error="status='requires_continuation' with no continuation_token", stop_reason=stop_reason,

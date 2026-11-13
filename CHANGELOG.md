@@ -7,8 +7,11 @@ follow-up to the Gemini continuation change). `cost.actual_call_cost` now takes 
 estimate and, for an errored reply with both token counts, charges the tokens at price for an
 HTTP 4xx or a reply with a stop reason (a complete response, such as an empty-text truncation,
 whose usage is exact), and the higher of tokens and the estimate for any other error (5xx,
-timeout, dropped connection), where the last hop's outcome is unknown. A 4xx with no tokens is
-still $0 and any other error with no tokens is still the estimate.
+timeout, dropped connection), where the last hop's outcome is unknown. If only one of the two
+counts was reported, that one is priced and the missing one counts as 0 for the floor. A 4xx with
+no tokens is still $0 and any other error with no tokens is still the estimate. A Gemini
+continuation reply with no continuation_token now keeps an unreported output count as None
+instead of 0.
 
 Gemini adapter follows `status: requires_continuation`. A non-streaming hop stops at 32,768
 tokens on gemini-4-carbon and gemini-4-argon (docs: aistudio.google.com/docs/long-decode), and a

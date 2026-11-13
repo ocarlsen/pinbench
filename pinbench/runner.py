@@ -125,9 +125,10 @@ def _source_is_batch(source):
 
 def _reprice_arm(arm_rec, price):
     """Copy of a source arm record with cost_usd recomputed from its recorded tokens at this
-    run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm with an
-    error or no recorded tokens has nothing to recompute from, so its recorded cost carries
-    over unchanged."""
+    run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm that
+    errored, or that lacks either recorded token count, is NOT repriced: its recorded cost
+    (which may include billed tokens, metered by cost.actual_call_cost at the source run's
+    price) carries over unchanged, with no batch-multiplier rescale."""
     rec = dict(arm_rec)
     rec["reused_cost_usd"] = arm_rec.get("cost_usd")
     in_tok, out_tok = arm_rec.get("input_tokens"), arm_rec.get("output_tokens")
