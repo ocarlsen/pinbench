@@ -137,8 +137,9 @@ def estimate_judge_call_cost(suite, item, price) -> float:
     return in_tok * price.input / 1e6 + out_tok * price.output / 1e6
 
 
-def estimate_judge_run(suite, judge_id, price, limit=None) -> ArmEstimate:
-    """Estimate every judge call a run would make: two per item (one per arm's output)."""
+def estimate_judge_run(suite, judge_id, price, limit=None, arms=("incumbent", "candidate")) -> ArmEstimate:
+    """Estimate every judge call a run would make: two per item (one per arm's output).
+    `arms` narrows that for a reused incumbent, whose judge calls are never made."""
     if price is None:
         raise ValueError(f"no price row for {judge_id}")
     items = suite.items[:limit] if limit is not None else suite.items
@@ -146,7 +147,7 @@ def estimate_judge_run(suite, judge_id, price, limit=None) -> ArmEstimate:
     total = 0.0
     for item in items:
         cost_each = estimate_judge_call_cost(suite, item, price)
-        for arm in ("incumbent", "candidate"):
+        for arm in arms:
             in_tok = _judge_char_estimate_input_tokens(suite, item)
             estimates.append(
                 ItemEstimate(item_id=f"{item.id}:{arm}", input_tokens=in_tok, output_tokens=suite.judge.max_output_tokens, cost_usd=cost_each, measured=False)
@@ -174,17 +175,23 @@ def actual_call_cost(reply, price) -> Optional[float]:
     return reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6
 
 
-def estimate_run(suite, incumbent_id, candidate_id, prices, limit=None, state_dir=None, judge_id=None) -> RunEstimate:
+def estimate_run(suite, incumbent_id, candidate_id, prices, limit=None, state_dir=None, judge_id=None, reuse_incumbent=False) -> RunEstimate:
+    """`reuse_incumbent=True` (run --reuse-incumbent): the incumbent arm and its judge calls
+    are never made, so both estimate at $0 with no items."""
     from pinbench import suite as suite_mod  # local import avoids a cycle at module load
 
     suite_hash = suite_mod.freeze_hash(suite)
     inc_price = prices.rows.get(incumbent_id)
     cand_price = prices.rows.get(candidate_id)
-    inc = estimate_arm(suite, incumbent_id, inc_price, limit=limit, state_dir=state_dir, suite_hash=suite_hash)
+    if reuse_incumbent:
+        inc = ArmEstimate(model_id=incumbent_id, items=[], cost_usd=0.0, measured_count=0)
+    else:
+        inc = estimate_arm(suite, incumbent_id, inc_price, limit=limit, state_dir=state_dir, suite_hash=suite_hash)
     cand = estimate_arm(suite, candidate_id, cand_price, limit=limit, state_dir=state_dir, suite_hash=suite_hash)
     judge = None
     if judge_id is not None:
-        judge = estimate_judge_run(suite, judge_id, prices.rows.get(judge_id), limit=limit)
+        judge_arms = ("candidate",) if reuse_incumbent else ("incumbent", "candidate")
+        judge = estimate_judge_run(suite, judge_id, prices.rows.get(judge_id), limit=limit, arms=judge_arms)
     return RunEstimate(incumbent=inc, candidate=cand, judge=judge)
 
 

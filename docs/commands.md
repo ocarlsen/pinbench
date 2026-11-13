@@ -5,8 +5,8 @@ Every `pinbench` subcommand, its flags, exit codes, and what each command refuse
 | command | what it does |
 |---|---|
 | `pinbench pins` | print the registry as a table |
-| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch]` | estimate cost, no spend |
-| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--timeout SECONDS] [--batch] [--poll-interval SECONDS] [--max-wait SECONDS]` | run both arms (and the judge, if any), write run.json |
+| `pinbench plan SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--batch] [--reuse-incumbent RUN]` | estimate cost, no spend |
+| `pinbench run SUITE --incumbent ID --candidate ID [--cap USD] [--allow-self-judge] [--timeout SECONDS] [--batch] [--reuse-incumbent RUN] [--poll-interval SECONDS] [--max-wait SECONDS]` | run both arms (and the judge, if any), write run.json |
 | `pinbench vote RUN_NAME [--open] [--allow-missing] [--allow-truncated]` | build the blind A/B page |
 | `pinbench report RUN_NAME [--votes votes.json]` | unblind, score, print the verdict |
 | `pinbench watch [--seed]` | diff the catalog of each provider `pins.yaml` uses against the last snapshot |
@@ -24,6 +24,7 @@ Other flags:
 |---|---|---|
 | `--limit N` | `plan`, `run` | use only the first N items of the suite, for both the estimate and the run; `items_total` in `run.json` is then N |
 | `--batch` | `plan`, `run` | send every Anthropic arm (and the judge, if any) as one Message Batch at the batch discount instead of one call per item. Anthropic-only: any non-Anthropic id among incumbent/candidate/judge refuses the whole run before anything is sent. `plan --batch` prints the discounted rate per arm/judge with a `batch_multiplier` line from `prices.yaml` |
+| `--reuse-incumbent RUN` | `plan`, `run` | copy the incumbent's per-item outputs and judge records from `runs/RUN/run.json` instead of calling it again. The arm whose model id is `--incumbent` is taken from RUN, whichever slot it held there; the candidate and its judge calls run as usual. `spent_usd.incumbent` is 0 and `plan` estimates the incumbent and its judge calls at $0. Refuses (exit 2, before any call) when: RUN is missing or neither arm is the incumbent id (or both are); `suite_hash` differs; the judge model or judge prompt hash differs; RUN's recorded request params for that arm differ from what this run would send; RUN stopped early, covers fewer items than the suite, or lacks a record for the arm; `--limit` or `--batch` is also given. For the cost check and the report the reused arm's per-item cost is recomputed from its recorded tokens at this run's prices (a batch-priced source's judge cost is divided by the judge's `batch_multiplier`); the recorded figure is kept per item as `reused_cost_usd`. Latency is the source's, unchanged. Judge errors and skips carry over as recorded; nothing is re-judged. `run.json` gets `reused_incumbent` (`run`, `arm_in_source`, `source_run_sha256`, `source_started_at`), and the report states the reuse beside the verdict. The hash identifies the source file; `run.json` is local, so it is not tamper evidence |
 | `--timeout SECONDS` | `run` | seconds to wait for each arm and judge call before giving it up as an error; default 60. Recorded in run.json as `timeout_s`. Not used with `--batch`, which makes no per-call request |
 | `--poll-interval SECONDS` | `run` (`--batch` only) | seconds between batch status polls; default 30 |
 | `--max-wait SECONDS` | `run` (`--batch` only) | seconds to wait for a batch to reach `ended` before giving up; default 86400 (24h, the vendor's own expiry). Giving up never cancels the batch -- it is left running, and the same command re-run re-submits (and pays again) |

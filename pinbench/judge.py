@@ -209,7 +209,7 @@ def skip_reason(reply) -> Optional[str]:
     return None
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S) -> tuple:
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S, only_arms=None) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
     `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
@@ -221,6 +221,9 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_repl
     record is still returned, never discarded, same as a partial run.
     """
     order = pick_call_order()
+    if only_arms is not None:
+        # run --reuse-incumbent: the incumbent's judge record is carried over, not re-made.
+        order = [arm for arm in order if arm in only_arms]
     record = {"call_order": order}
     for arm in order:
         reply = arm_replies[arm]

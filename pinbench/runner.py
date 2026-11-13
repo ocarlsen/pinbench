@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 import datetime as _dt
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ class PlanResult:
     within_cap: Optional[bool]
     judge_id: Optional[str] = None
     batch: bool = False
+    reuse: Optional["ReuseSource"] = None
 
 
 def _require_price_and_route(model_id, prices):
@@ -94,9 +96,125 @@ def _batch_prices(prices, *model_ids) -> "prices_mod.Prices":
     return prices_mod.Prices(version=prices.version, checked=prices.checked, rows=rows)
 
 
+@dataclass
+class ReuseSource:
+    """A validated `--reuse-incumbent` source: the stored arm outputs and judge records,
+    already repriced for this run. Built only by `_load_reuse_source`."""
+
+    run_name: str
+    arm_in_source: str
+    sha256: str
+    started_at: Optional[str]
+    items: dict  # item_id -> (arm_record, judge_record or None), both ready to copy into this run
+
+
+def _refuse_reuse(run_name, why):
+    raise PlanRefused(f"--reuse-incumbent {run_name}: {why}")
+
+
+def _source_is_batch(source, source_dir):
+    return bool(source.get("batch")) or (source_dir / "batch.json").exists()
+
+
+def _reprice_arm(arm_rec, price):
+    """Copy of a source arm record with cost_usd recomputed from its recorded tokens at this
+    run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm with an
+    error or no recorded tokens has nothing to recompute from, so its recorded cost carries over."""
+    rec = dict(arm_rec)
+    rec["reused_cost_usd"] = arm_rec.get("cost_usd")
+    in_tok, out_tok = arm_rec.get("input_tokens"), arm_rec.get("output_tokens")
+    if arm_rec.get("error") is None and in_tok is not None and out_tok is not None:
+        rec["cost_usd"] = in_tok * price.input / 1e6 + out_tok * price.output / 1e6
+    return rec
+
+
+def _reprice_judge(judge_rec, source_is_batch, judge_price, run_name):
+    """Copy of the source's judge record for the reused arm. Judge records carry only
+    cost_usd, no tokens, so a batch-priced source is rescaled to the sync price by dividing
+    by the judge price row's batch_multiplier (the source judge model equals this run's, per
+    the judge check). The as-recorded figure is kept as reused_cost_usd."""
+    rec = dict(judge_rec)
+    rec["reused_cost_usd"] = judge_rec.get("cost_usd")
+    if source_is_batch and judge_rec.get("cost_usd") is not None:
+        if judge_price.batch_multiplier is None:
+            _refuse_reuse(run_name, f"source was batch-priced and '{judge_price.model}' has no batch_multiplier in prices.yaml to recompute its judge cost")
+        rec["cost_usd"] = judge_rec["cost_usd"] / judge_price.batch_multiplier
+    return rec
+
+
+def _load_reuse_source(run_name, suite, incumbent_id, prices, state_dir, limit, batch) -> ReuseSource:
+    """Every refusal for `--reuse-incumbent`, before any spend (and before any call)."""
+    # 6. batch
+    if batch:
+        _refuse_reuse(run_name, "not supported with --batch yet")
+    # 2 (part). partial reuse
+    if limit is not None:
+        _refuse_reuse(run_name, "cannot be combined with --limit; no partial reuse")
+    # 1. missing run
+    if not run_name or Path(run_name).name != run_name or run_name in (".", ".."):
+        _refuse_reuse(run_name, "not a run name")
+    source_dir = Path(state_dir or ".pinbench") / "runs" / run_name
+    source_path = source_dir / "run.json"
+    if not source_path.is_file():
+        _refuse_reuse(run_name, f"no {source_path}")
+    raw = source_path.read_bytes()
+    try:
+        source = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _refuse_reuse(run_name, f"run.json is not valid JSON: {exc}")
+    # 1. which arm is M
+    arms = [a for a in ("incumbent", "candidate") if source.get(a) == incumbent_id]
+    if not arms:
+        _refuse_reuse(run_name, f"neither arm is '{incumbent_id}' (incumbent '{source.get('incumbent')}', candidate '{source.get('candidate')}')")
+    if len(arms) == 2:
+        _refuse_reuse(run_name, f"both arms are '{incumbent_id}'; ambiguous which to reuse")
+    arm = arms[0]
+    # 2. suite
+    if source.get("suite_hash") != suite_mod.freeze_hash(suite):
+        _refuse_reuse(run_name, "suite_hash differs (items, inputs, task, max_output_tokens or rubric points changed)")
+    # 3. judge
+    if suite.judge is None:
+        if source.get("judge_model") is not None:
+            _refuse_reuse(run_name, f"source was judged by '{source.get('judge_model')}' but this suite has no judge")
+    else:
+        this_run = {"judge_model": suite.judge.model, "judge_prompt_hash": judge_mod.prompt_hash(suite.judge.rubric)}
+        try:
+            judge_mod.assert_comparable(source, this_run)
+        except judge_mod.JudgeMismatch as exc:
+            _refuse_reuse(run_name, f"judge differs: {exc}")
+    # 4. request params
+    price = prices.rows[incumbent_id]
+    this_params = _recorded_params(suite, _merged_params(price, suite))
+    recorded = (source.get("request_params") or {}).get(arm)
+    if recorded is None or recorded != json.loads(json.dumps(this_params)):
+        _refuse_reuse(run_name, f"request params for '{incumbent_id}' differ: source sent {recorded!r}, this run would send {this_params!r}")
+    # 5. complete
+    source_items = source.get("items") or []
+    if source.get("stopped_early"):
+        _refuse_reuse(run_name, "the source run stopped early")
+    if len(source_items) != len(suite.items) or source.get("items_total") != len(suite.items):
+        _refuse_reuse(run_name, f"the source covers {len(source_items)} of {len(suite.items)} suite items")
+    is_batch = _source_is_batch(source, source_dir)
+    judge_price = prices.rows[suite.judge.model] if suite.judge else None
+    items = {}
+    for expected, rec in zip(suite.items, source_items):
+        arm_rec = rec.get("id") == expected.id and rec.get(arm)
+        judge_rec = (rec.get("judge") or {}).get(arm) if suite.judge else None
+        if not arm_rec or (suite.judge and not judge_rec):
+            _refuse_reuse(run_name, f"the source is incomplete at item '{expected.id}' (no {'judge record or ' if suite.judge else ''}arm record)")
+        items[expected.id] = (
+            _reprice_arm(arm_rec, price),
+            _reprice_judge(judge_rec, is_batch, judge_price, run_name) if suite.judge else None,
+        )
+    return ReuseSource(
+        run_name=run_name, arm_in_source=arm, sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
+        started_at=source.get("started_at"), items=items,
+    )
+
+
 def plan(
     suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None,
-    allow_self_judge=False, batch=False,
+    allow_self_judge=False, batch=False, reuse_incumbent=None,
 ) -> PlanResult:
     judge_id = suite.judge.model if suite.judge else None
     try:
@@ -109,13 +227,16 @@ def plan(
     if batch:
         _check_batch_provider(incumbent_id, candidate_id, judge_id)
     _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge)
+    reuse = None
+    if reuse_incumbent is not None:
+        reuse = _load_reuse_source(reuse_incumbent, suite, incumbent_id, prices, state_dir, limit, batch)
 
     estimate_prices = _batch_prices(prices, incumbent_id, candidate_id, judge_id) if batch else prices
-    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, estimate_prices, limit=limit, state_dir=state_dir, judge_id=judge_id)
+    estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, estimate_prices, limit=limit, state_dir=state_dir, judge_id=judge_id, reuse_incumbent=reuse is not None)
     within_cap = None if cap_usd is None else estimate.total_usd <= cap_usd
     return PlanResult(
         incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd,
-        within_cap=within_cap, judge_id=judge_id, batch=batch,
+        within_cap=within_cap, judge_id=judge_id, batch=batch, reuse=reuse,
     )
 
 
@@ -176,9 +297,12 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S):
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
-    meter stops it. Never aborts a call in flight."""
+    meter stops it. Never aborts a call in flight.
+
+    `reuse` (a ReuseSource) fills the incumbent slot from stored records: no incumbent call,
+    no incumbent judge call, nothing charged to the meter for either."""
     inc_params = _merged_params(inc_price, suite)
     cand_params = _merged_params(cand_price, suite)
     result_items = []
@@ -192,18 +316,25 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
     unexpected = None
     for item in items:
         inc_reply = inc_cost = cand_reply = cand_cost = None
+        reused_arm = reused_judge = None
         try:
-            if not meter.check(inc_estimates[item.id]):
-                stopped_early = True
-                break
-            inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
-            inc_stats.record(inc_reply)
-            inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
-            spent_incumbent += inc_cost
+            if reuse is not None:
+                reused_arm, reused_judge = reuse.items[item.id]
+                inc_reply = _reply_from_record(reused_arm)
+                inc_cost = reused_arm["cost_usd"]
+                inc_stats.record(inc_reply)
+            else:
+                if not meter.check(inc_estimates[item.id]):
+                    stopped_early = True
+                    break
+                inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
+                inc_stats.record(inc_reply)
+                inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
+                spent_incumbent += inc_cost
 
             if not meter.check(cand_estimates[item.id]):
                 stopped_early = True
-                result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None))
+                result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None, incumbent_record=reused_arm))
                 break
             cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s)
             cand_stats.record(cand_reply)
@@ -218,12 +349,17 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 judge_record, judge_stopped = judge_mod.run_judge_stage(
                     meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
                     {"incumbent": inc_reply, "candidate": cand_reply}, timeout_s=timeout_s,
+                    only_arms=("candidate",) if reuse is not None else None,
                 )
-                spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
+                if reuse is not None:
+                    judge_record["incumbent"] = reused_judge
+                    spent_judge += judge_record["candidate"]["cost_usd"] if "candidate" in judge_record else 0.0
+                else:
+                    spent_judge += sum(judge_record[arm]["cost_usd"] for arm in ("incumbent", "candidate") if arm in judge_record)
                 if judge_stopped:
                     stopped_early = True
 
-            result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record))
+            result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record, incumbent_record=reused_arm))
             if judge_ctx is not None and stopped_early:
                 break
         except Exception as exc:  # noqa: BLE001 - keep every paid output, then re-raise from run()
@@ -233,7 +369,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             unexpected = exc
             stopped_early = True
             if inc_reply is not None and inc_cost is not None:
-                result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost))
+                result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, incumbent_record=reused_arm))
             break
 
     arm_stats = {"incumbent": inc_stats, "candidate": cand_stats}
@@ -243,7 +379,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
 def run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
-    batch=False, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
+    batch=False, reuse_incumbent=None, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -268,14 +404,14 @@ def run(
 
     plan_result = plan(
         suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir,
-        allow_self_judge=allow_self_judge, batch=batch,
+        allow_self_judge=allow_self_judge, batch=batch, reuse_incumbent=reuse_incumbent,
     )
     if not plan_result.within_cap:
         raise RunCapExceeded(
             f"estimate ${plan_result.estimate.total_usd:.4f} exceeds cap ${cap_usd:.4f}",
             plan_result.estimate,
         )
-    _check_api_keys(incumbent_id, candidate_id, plan_result.judge_id)
+    _check_api_keys(None if reuse_incumbent is not None else incumbent_id, candidate_id, plan_result.judge_id)
 
     if batch:
         from . import batch as batch_mod  # local import: batch.py imports this module at load time
@@ -307,7 +443,7 @@ def run(
 
     result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected = _execute_items(
         items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx,
-        timeout_s=timeout_s,
+        timeout_s=timeout_s, reuse=plan_result.reuse,
     )
 
     finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -317,6 +453,12 @@ def run(
     )
     record["effective_config"] = effective_config
     record["timeout_s"] = timeout_s
+    if plan_result.reuse is not None:
+        reuse = plan_result.reuse
+        record["reused_incumbent"] = {
+            "run": reuse.run_name, "arm_in_source": reuse.arm_in_source,
+            "source_run_sha256": reuse.sha256, "source_started_at": reuse.started_at,
+        }
 
     _write_run_json(state_dir, run_name, record)
     if unexpected is not None:
@@ -377,7 +519,16 @@ def _arm_record(reply, cost_usd):
     }
 
 
-def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost, judge_record=None):
+def _reply_from_record(arm_rec):
+    """A providers.Reply rebuilt from a stored arm record, so a reused incumbent goes through
+    the same stats and judge-skip rules as a live reply."""
+    return providers.Reply(
+        output=arm_rec.get("output"), input_tokens=arm_rec.get("input_tokens"), output_tokens=arm_rec.get("output_tokens"),
+        latency_ms=arm_rec.get("latency_ms"), error=arm_rec.get("error"), stop_reason=arm_rec.get("stop_reason"),
+    )
+
+
+def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost, judge_record=None, incumbent_record=None):
     """`incumbent`/`candidate` are providers.Reply objects; candidate is None when the meter
     stopped first. `judge_record` (from judge.run_judge_stage) is None for a non-judge suite,
     or when the meter stopped before the judge stage ran for this item.
@@ -387,7 +538,8 @@ def _item_record(item, incumbent, incumbent_cost, candidate, candidate_cost, jud
         "input": item.input,
         "expect": item.expect,
         "rubric_points": [{"id": p.id, "description": p.description} for p in item.rubric_points],
-        "incumbent": _arm_record(incumbent, incumbent_cost),
+        # incumbent_record: a reused arm record (already repriced), copied as stored.
+        "incumbent": incumbent_record if incumbent_record is not None else _arm_record(incumbent, incumbent_cost),
         "candidate": None if candidate is None else _arm_record(candidate, candidate_cost),
     }
     if judge_record is not None:

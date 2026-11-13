@@ -122,6 +122,10 @@ def render_text(run: dict, suite, result: verdict_mod.Verdict) -> str:
         mark = "PASS" if check.passed else "FAIL"
         lines.append(f"  [{mark}] {check.name}: {check.detail}")
     lines.append("")
+    reuse_line = _reuse_line(run)
+    if reuse_line:
+        lines.append(reuse_line)
+        lines.append("")
     lines.append(f"Verdict: {result.verdict}")
     lines.append(f"Rule: {result.rule_text}")
     return "\n".join(lines) + "\n"
@@ -165,6 +169,10 @@ def render_markdown(run: dict, suite, result: verdict_mod.Verdict) -> str:
     lines.append("")
     lines.append(f"## Verdict: {result.verdict}")
     lines.append("")
+    reuse_line = _reuse_line(run)
+    if reuse_line:
+        lines.append(f"> {reuse_line}")
+        lines.append("")
     lines.append(result.rule_text)
     return "\n".join(lines) + "\n"
 
@@ -185,11 +193,26 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "judge_calls_skipped": scoring_mod.judge_skipped_count(run) if run.get("judge_model") else None,
         "spent_usd": run["spent_usd"],
         "estimate_usd": run["estimate_usd"],
+        "reused_incumbent": run.get("reused_incumbent"),
         "verdict": result.verdict,
         "checks": [c.__dict__ for c in result.checks],
         "rule": result.rule_text,
     }
     return json.dumps(payload, indent=2) + "\n"
+
+
+def _reuse_line(run: dict) -> Optional[str]:
+    """Printed beside the verdict for a `--reuse-incumbent` run, else None: the two arms were
+    not measured together, and the incumbent's cost is a recomputation."""
+    reused = run.get("reused_incumbent")
+    if not reused:
+        return None
+    recorded = (reused.get("source_started_at") or "an unrecorded date")[:10]
+    return (
+        f"Incumbent outputs reused from run {reused['run']}, recorded on {recorded}; "
+        "the two arms were judged in different sessions. Incumbent cost is recomputed from "
+        "recorded tokens at this run's prices, not what was paid."
+    )
 
 
 def _batch_line(run: dict) -> Optional[str]:
