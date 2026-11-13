@@ -14,8 +14,11 @@ recorded cost; a batch source's incumbent judge cost, which has no tokens, is re
 source's recorded batch multiplier) for the cost check and report (recorded figure kept as
 `reused_cost_usd`), `run.json` records `reused_incumbent`, and the report says beside the
 verdict that the two arms were judged in different sessions and counts only the judge calls
-made this run. A source that is itself a reuse run refuses. Carried-over arm or judge errors
-make the verdict INCOMPLETE; `plan` and `run` warn about them before spending. Judge errors and skips
+made this run. A source that is itself a reuse run refuses only when the arm being reused is its reused
+incumbent slot; its freshly measured candidate can be reused. A batch source's recorded
+judge multiplier must be a number > 0 and <= 1, as in `prices.load`, or the run refuses. Carried-over arm or judge errors,
+and a reused arm with more truncated outputs than `policy.max_truncated`, make the verdict
+INCOMPLETE; `plan` and `run` warn about them before spending. Judge errors and skips
 carry over as recorded; no re-judging.
 
 `run --timeout SECONDS` (issue #8): the per-call HTTP timeout for arms and the judge, which was

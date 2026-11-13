@@ -534,3 +534,55 @@ def test_cli_plan_and_run_accept_the_flag(tmp_path, fake_adapter, monkeypatch, c
 
     assert cli.main(["run", *common, "--reuse-incumbent", "src", "--batch"]) == 2
     assert cli.main(["run", *common, "--reuse-incumbent", "gone"]) == 2
+
+
+def test_reusing_a_reuse_runs_live_candidate_is_allowed(tmp_path, fake_adapter):
+    _, s, path = _ready(tmp_path, fake_adapter)
+    _reuse(tmp_path, s, path)                       # run "new": INC reused, OTHER measured live
+    fake_adapter.calls.clear()
+    fake_adapter.call_count = 0
+    record = runner.run(s, OTHER, CAND, _prices(tmp_path), cap_usd=50.0, state_dir=tmp_path / "state", suite_path=str(path), name="third", reuse_incumbent="new")
+    assert record["reused_incumbent"]["arm_in_source"] == "candidate"
+    for item, s_item in zip(record["items"], s.items):
+        assert item["incumbent"]["output"] == _out(OTHER, s_item)
+    assert OTHER not in [m for m, _ in fake_adapter.calls]
+
+
+def test_chained_refusal_names_the_reused_incumbent_slot(tmp_path, fake_adapter):
+    _, s, path = _ready(tmp_path, fake_adapter)
+    _reuse(tmp_path, s, path)
+    fake_adapter.call_count = 0
+    with pytest.raises(runner.PlanRefused) as exc:
+        runner.plan(s, INC, CAND, _prices(tmp_path), cap_usd=50.0, state_dir=tmp_path / "state", reuse_incumbent="new")
+    _assert_refused(fake_adapter, exc, "reused incumbent", "reuse the original run")
+
+
+def test_truncated_reused_arm_warns_with_count_and_first_item(tmp_path, fake_adapter, capsys):
+    src, s, path = _ready(tmp_path, fake_adapter)
+
+    def mutate(data):
+        for i in (1, 3):
+            data["items"][i]["incumbent"]["stop_reason"] = "max_tokens"
+
+    _edit_source(src, mutate)
+    _reuse(tmp_path, s, path)
+    err = capsys.readouterr().err
+    assert "2 truncated output(s)" in err and "max_truncated" in err and "'r02'" in err and "INCOMPLETE" in err
+
+
+def test_truncation_within_policy_allowance_prints_no_warning(tmp_path, fake_adapter, capsys):
+    src, s, path = _ready(tmp_path, fake_adapter)
+    s.policy.max_truncated = 1
+    _edit_source(src, lambda d: d["items"][1]["incumbent"].update(stop_reason="max_tokens"))
+    _reuse(tmp_path, s, path)
+    assert "truncated" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", [0, -0.5, 1.5, "0.5", True, float("nan")])
+def test_refuse_invalid_recorded_batch_multiplier(tmp_path, fake_adapter, bad):
+    src, s, path = _ready(tmp_path, fake_adapter)
+    _edit_source(src, _make_batch(0.5))
+    _edit_source(src, lambda d: d["batch"]["price_multiplier"].update({JUDGE: bad}))
+    with pytest.raises(runner.PlanRefused) as exc:
+        _reuse(tmp_path, s, path)
+    _assert_refused(fake_adapter, exc, "price_multiplier", "> 0 and <= 1")
