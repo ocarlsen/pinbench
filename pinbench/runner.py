@@ -376,7 +376,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                     break
                 inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
                 inc_stats.record(inc_reply)
-                inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
+                inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, inc_estimates[item.id]), inc_estimates[item.id])
                 spent_incumbent += inc_cost
 
             if not meter.check(cand_estimates[item.id]):
@@ -385,7 +385,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 break
             cand_reply = _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s)
             cand_stats.record(cand_reply)
-            cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
+            cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price, cand_estimates[item.id]), cand_estimates[item.id])
             spent_candidate += cand_cost
 
             judge_record = None

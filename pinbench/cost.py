@@ -157,19 +157,39 @@ def estimate_judge_run(suite, judge_id, price, limit=None, arms=("incumbent", "c
     return ArmEstimate(model_id=judge_id, items=estimates, cost_usd=total, measured_count=0)
 
 
-def actual_call_cost(reply, price) -> Optional[float]:
-    """None means "charge the estimate instead" (an unknown outcome); never a fabricated $0.
+def actual_call_cost(reply, price, estimate_usd=None) -> Optional[float]:
+    """What to charge the meter for one reply. None means "charge the estimate" (an unknown
+    outcome); never a fabricated $0. Shared by the arm runner, the batch path and the judge
+    stage: one cost rule, not two.
 
-    A request that errored before generating (an HTTP 4xx: bad request, auth, not-found,
-    rate-limited) never produced billable output, so it costs $0 -- that is known, not
-    unknown. Any other error (a 5xx, a timeout, a dropped connection after the request was
-    sent) leaves the outcome unknown, so it is charged at the estimate, same as a 2xx reply
-    with missing usage. Shared by the arm runner and the judge stage: one cost rule, not two.
+    Rule: never charge less than the tokens a reply reports as billed.
+
+    - Success with usage: tokens at price. Success with missing usage: None (the estimate).
+    - Errored reply carrying BOTH input and output tokens (a Gemini continuation that failed
+      after paid hops, or a single call whose usage was parsed from a real response, such as
+      an empty-text truncation):
+        * HTTP 4xx, or a reply with a stop_reason: the outcome is known (the server refused
+          the next request, or answered completely), so the cost is exactly tokens at price.
+        * Any other error (a 5xx, a timeout, a dropped connection; stop_reason is None): the
+          final hop's outcome is unknown and may have billed more than was reported, so the
+          cost is max(tokens at price, estimate_usd). Callers pass the estimate they would
+          hand to CostMeter.charge; with no estimate given the token cost is returned as a
+          floor, which callers on the metered path must not rely on.
+      A single-call empty-text truncation used to be charged the estimate; it now costs its
+      real tokens, because its usage is exact and the estimate (which prices the suite's
+      max_output_tokens) can be above or below what was billed.
+    - Errored reply without both token counts: unchanged. An HTTP 4xx (bad request, auth,
+      not-found, rate-limited) never generated, so $0 (known, not unknown); any other error
+      leaves the outcome unknown, so None (the estimate).
     """
     if reply.error is not None:
-        if reply.status_code is not None and 400 <= reply.status_code < 500:
-            return 0.0
-        return None
+        is_4xx = reply.status_code is not None and 400 <= reply.status_code < 500
+        if reply.input_tokens is None or reply.output_tokens is None:
+            return 0.0 if is_4xx else None
+        token_cost = reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6
+        if is_4xx or reply.stop_reason is not None:
+            return token_cost
+        return token_cost if estimate_usd is None else max(token_cost, estimate_usd)
     if reply.input_tokens is None or reply.output_tokens is None:
         return None
     return reply.input_tokens * price.input / 1e6 + reply.output_tokens * price.output / 1e6

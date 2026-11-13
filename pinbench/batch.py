@@ -246,8 +246,8 @@ def run_batch(
         cand_reply, cand_type = arm_results[cand_cid]
         inc_stats.record(inc_reply)
         cand_stats.record(cand_reply)
-        inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price), inc_estimates[item.id])
-        cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price), cand_estimates[item.id])
+        inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, inc_estimates[item.id]), inc_estimates[item.id])
+        cand_cost = meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price, cand_estimates[item.id]), cand_estimates[item.id])
         spent_incumbent += inc_cost
         spent_candidate += cand_cost
         arm_replies[index] = {"incumbent": inc_reply, "candidate": cand_reply}
@@ -321,7 +321,7 @@ def run_batch(
                 reply, rtype = judge_results[cid]
                 outcome = judge_mod.interpret_reply(reply, item, suite)
                 est = cost_mod.estimate_judge_call_cost(suite, item, judge_price)
-                cost_usd = meter.charge(cost_mod.actual_call_cost(reply, judge_price), est)
+                cost_usd = meter.charge(cost_mod.actual_call_cost(reply, judge_price, est), est)
                 spent_judge += cost_usd
                 judge_records[index][arm] = judge_mod._outcome_record(outcome, cost_usd)
                 batch_results_record[cid] = {"item": item.id, "arm": arm, "type": rtype}
