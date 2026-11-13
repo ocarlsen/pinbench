@@ -17,6 +17,7 @@ from test_batch import (  # noqa: F401 - the fixtures must be importable to be u
     fake_http, no_sleep,
 )
 
+from pinbench import cost as cost_mod
 from pinbench import judge as judge_mod
 from pinbench import prices as prices_mod
 from pinbench import providers
@@ -347,3 +348,25 @@ def test_reuse_refuses_bad_recorded_judge_batch_multiplier(tmp_path, monkeypatch
     prices = prices_mod.load(tmp_path / "prices.yaml")
     with pytest.raises(runner_mod.PlanRefused, match="judge_batch.price_multiplier"):
         runner_mod.plan(suite, "claude-sonnet-5-5", "claude-haiku-5-5", prices, state_dir=tmp_path / ".pinbench", reuse_incumbent="src")
+
+
+# --- the judge-batch metering site passes its own estimate to actual_call_cost -------------
+
+def test_judge_batch_site_meters_the_judge_estimate(tmp_path, monkeypatch, fake_http, gemini_env, no_sleep):
+    """An errored judge reply that carries tokens and has an unknown outcome (no status, no
+    stop_reason) is charged max(tokens, estimate). The estimate is computed here from the
+    suite and the batch-priced judge row, not read off another item in the run."""
+    _script_judge_batch(fake_http, n=1)
+    stub = lambda line: providers.Reply(output=None, input_tokens=2, output_tokens=1, latency_ms=None, error="connection reset")
+    monkeypatch.setattr(anthropic_provider, "reply_from_batch_result", stub)
+    suite_path = _suite_file(tmp_path, n=1)
+    assert _run_cli(tmp_path, monkeypatch, _args(suite_path, _prices_file(tmp_path), "--batch-judge")) == 0
+
+    suite = suite_mod.load(suite_path)
+    batch_row = prices_mod.load(tmp_path / "prices.yaml").rows[JUDGE].at_batch()
+    estimate = cost_mod.estimate_judge_call_cost(suite, suite.items[0], batch_row)
+    token_cost = (2 * batch_row.input + 1 * batch_row.output) / 1e6
+    assert estimate > token_cost
+    run = _load(tmp_path)
+    for arm in ("incumbent", "candidate"):
+        assert run["items"][0]["judge"][arm]["cost_usd"] == pytest.approx(estimate)

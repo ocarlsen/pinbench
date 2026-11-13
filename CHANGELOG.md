@@ -18,6 +18,16 @@ records marked "not judged" (the verdict is INCOMPLETE). `run.json` records `jud
 `--reuse-incumbent` (only the candidate's judge calls are batched). The report header notes
 `judge: batched (id ...)`.
 
+The cost meter no longer under-charges an errored reply that carries billed tokens (issue #20,
+follow-up to the Gemini continuation change). `cost.actual_call_cost` now takes the call's
+estimate and, for an errored reply with both token counts, charges the tokens at price for an
+HTTP 4xx or a reply with a stop reason (a complete response, such as an empty-text truncation,
+whose usage is exact), and the higher of tokens and the estimate for any other error (5xx,
+timeout, dropped connection), where the last hop's outcome is unknown. A reply missing
+either count is unchanged: a 4xx is $0 and any other error is the estimate. A Gemini
+continuation reply with no continuation_token now keeps an unreported output count as None
+instead of 0.
+
 Gemini adapter follows `status: requires_continuation`. A non-streaming hop stops at 32,768
 tokens on gemini-4-carbon and gemini-4-argon (docs: aistudio.google.com/docs/long-decode), and a
 live run at thinking_level medium came back after 32,765 thought tokens with no text, which was

@@ -14,8 +14,13 @@ What pinbench does not do, and the model-specific behavior it leaves to the regi
   the summed thinking+output reaches `max_output_tokens`; either bound records the output as
   truncated. Usage is summed per hop, which assumes each hop's `usage` is its own (the docs are
   ambiguous), and cached input tokens are billed as ordinary input, so Gemini input cost is an
-  upper bound. An error after a paid hop keeps its summed tokens on the reply, but the cost
-  meter charges an errored reply at the estimate (or $0 for an HTTP 4xx), not from those tokens.
+  upper bound. An error after a paid hop keeps its summed tokens on the reply, and the cost
+  meter never charges less than them: an HTTP 4xx costs those tokens, and any other error
+  (a 5xx, a timeout, a dropped connection) costs the higher of those tokens and the estimate.
+  Known limits: a continuation hop that times out may itself have been billed, so the higher-of
+  rule can still under-state the cost of a multi-hop failure; and tokens are used only when both
+  counts were reported, so a 4xx on a later hop whose earlier hops reported only one count is
+  charged $0.
 - Label matching is exact, contains, or regex, or a fixed LLM judge scoring recall against a
   rubric. There is no fourth mode, and a judge suite does not also support `expect`-based
   labels on the same items.

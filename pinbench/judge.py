@@ -238,7 +238,7 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_repl
         # The judge model's own request_defaults (prices.yaml) travel with it, same as an
         # arm's do: a judge that needs a model-specific thinking/effort shape gets it.
         outcome, judge_reply = judge_output(judge_id, item, suite, reply.output, api_key, params=judge_price.request_defaults, timeout_s=timeout_s)
-        cost_usd = meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price), est)
+        cost_usd = meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price, est), est)
         record[arm] = _outcome_record(outcome, cost_usd)
     return record, False
 
