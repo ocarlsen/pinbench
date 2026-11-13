@@ -189,8 +189,9 @@ def render_json(run: dict, suite, result: verdict_mod.Verdict) -> str:
         "items_completed": run["items_completed"],
         "items_total": run["items_total"],
         "stopped_early": run.get("stopped_early", False),
-        "judge_calls_judged": scoring_mod.judge_judged_count(run) if run.get("judge_model") else None,
-        "judge_calls_skipped": scoring_mod.judge_skipped_count(run) if run.get("judge_model") else None,
+        # A reuse run counts only the judge calls made this run (candidate); see _judge_calls_line.
+        "judge_calls_judged": scoring_mod.judge_judged_count(run, "candidate" if run.get("reused_incumbent") else None) if run.get("judge_model") else None,
+        "judge_calls_skipped": scoring_mod.judge_skipped_count(run, "candidate" if run.get("reused_incumbent") else None) if run.get("judge_model") else None,
         "spent_usd": run["spent_usd"],
         "estimate_usd": run["estimate_usd"],
         "reused_incumbent": run.get("reused_incumbent"),
@@ -208,11 +209,21 @@ def _reuse_line(run: dict) -> Optional[str]:
     if not reused:
         return None
     recorded = (reused.get("source_started_at") or "an unrecorded date")[:10]
-    return (
+    text = (
         f"Incumbent outputs reused from run {reused['run']}, recorded on {recorded}; "
-        "the two arms were judged in different sessions. Incumbent cost is recomputed from "
-        "recorded tokens at this run's prices, not what was paid."
+        "the two arms were judged in different sessions. Incumbent arm cost is recomputed "
+        "from recorded tokens at this run's prices where the source recorded tokens (an "
+        "errored or tokenless arm keeps its recorded cost); a batch source's incumbent judge "
+        "cost is rescaled by the source's recorded batch multiplier. Neither is what was paid."
     )
+    arm_errs = scoring_mod.error_count(run, "incumbent")
+    judge_errs = sum(1 for i in run["items"] if ((i.get("judge") or {}).get("incumbent") or {}).get("error"))
+    if arm_errs or judge_errs:
+        text += (
+            f" Carried-over incumbent errors: {arm_errs} arm, {judge_errs} judge; "
+            "they were not retried, so the verdict is INCOMPLETE because of them."
+        )
+    return text
 
 
 def _batch_line(run: dict) -> Optional[str]:
@@ -241,6 +252,12 @@ def _judge_calls_line(run: dict) -> Optional[str]:
     """
     if not run.get("judge_model"):
         return None
+    if run.get("reused_incumbent"):
+        # Only calls made in THIS run (candidate); the incumbent's judge records were copied.
+        made = scoring_mod.judge_judged_count(run, "candidate")
+        skipped = scoring_mod.judge_skipped_count(run, "candidate")
+        carried = scoring_mod.judge_judged_count(run, "incumbent") + scoring_mod.judge_skipped_count(run, "incumbent")
+        return f"judge calls: {made} judged, {skipped} skipped (truncated/error), all candidate; {carried} incumbent judge records reused, not made this run"
     judged = scoring_mod.judge_judged_count(run)
     skipped = scoring_mod.judge_skipped_count(run)
     return f"judge calls: {judged} judged, {skipped} skipped (truncated/error)"

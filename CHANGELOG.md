@@ -9,9 +9,13 @@ the incumbent side at $0. Refuses before any call unless RUN holds the incumbent
 arm, not both), with the same suite hash, judge model and judge prompt hash (the first caller
 of `judge.assert_comparable`), the same recorded request params, and a complete (not stopped
 early, every item) record; `--limit` and `--batch` refuse with it. The reused arm's cost is
-recomputed from recorded tokens at this run's prices for the cost check and report (recorded
-figure kept as `reused_cost_usd`), `run.json` records `reused_incumbent`, and the report says
-beside the verdict that the two arms were judged in different sessions. Judge errors and skips
+recomputed from recorded tokens at this run's prices (an errored or tokenless arm keeps its
+recorded cost; a batch source's incumbent judge cost, which has no tokens, is rescaled by the
+source's recorded batch multiplier) for the cost check and report (recorded figure kept as
+`reused_cost_usd`), `run.json` records `reused_incumbent`, and the report says beside the
+verdict that the two arms were judged in different sessions and counts only the judge calls
+made this run. A source that is itself a reuse run refuses. Carried-over arm or judge errors
+make the verdict INCOMPLETE; `plan` and `run` warn about them before spending. Judge errors and skips
 carry over as recorded; no re-judging.
 
 `run --timeout SECONDS` (issue #8): the per-call HTTP timeout for arms and the judge, which was

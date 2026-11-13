@@ -14,7 +14,8 @@ import datetime as _dt
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -105,21 +106,25 @@ class ReuseSource:
     arm_in_source: str
     sha256: str
     started_at: Optional[str]
-    items: dict  # item_id -> (arm_record, judge_record or None), both ready to copy into this run
+    carried_errors: list = field(default_factory=list)  # (item_id, what) for each arm/judge error carried over
+    items: dict = field(default_factory=dict)  # item_id -> (arm_record, judge_record or None), both ready to copy into this run
 
 
 def _refuse_reuse(run_name, why):
     raise PlanRefused(f"--reuse-incumbent {run_name}: {why}")
 
 
-def _source_is_batch(source, source_dir):
-    return bool(source.get("batch")) or (source_dir / "batch.json").exists()
+def _source_is_batch(source):
+    """Batch only when the source's own run.json says so; a stray batch.json beside a sync
+    run.json does not count."""
+    return bool(source.get("batch"))
 
 
 def _reprice_arm(arm_rec, price):
     """Copy of a source arm record with cost_usd recomputed from its recorded tokens at this
     run's (sync) price row; the as-recorded figure is kept as reused_cost_usd. An arm with an
-    error or no recorded tokens has nothing to recompute from, so its recorded cost carries over."""
+    error or no recorded tokens has nothing to recompute from, so its recorded cost carries
+    over unchanged."""
     rec = dict(arm_rec)
     rec["reused_cost_usd"] = arm_rec.get("cost_usd")
     in_tok, out_tok = arm_rec.get("input_tokens"), arm_rec.get("output_tokens")
@@ -128,17 +133,24 @@ def _reprice_arm(arm_rec, price):
     return rec
 
 
-def _reprice_judge(judge_rec, source_is_batch, judge_price, run_name):
+def _reprice_judge(judge_rec, source, judge_price, run_name):
     """Copy of the source's judge record for the reused arm. Judge records carry only
-    cost_usd, no tokens, so a batch-priced source is rescaled to the sync price by dividing
-    by the judge price row's batch_multiplier (the source judge model equals this run's, per
-    the judge check). The as-recorded figure is kept as reused_cost_usd."""
+    cost_usd, no tokens, so this is a RESCALE, not a recomputation: a batch-priced source
+    (its run.json has a `batch` block) has its judge cost divided by the multiplier the
+    source recorded for the judge model (batch.price_multiplier[judge model]). If the source
+    says batch but records no multiplier for the judge, fall back to the batch_multiplier on
+    today's price row (the best available figure), and refuse if that is absent too. A sync
+    source is carried over unchanged. The as-recorded figure is kept as reused_cost_usd."""
     rec = dict(judge_rec)
     rec["reused_cost_usd"] = judge_rec.get("cost_usd")
-    if source_is_batch and judge_rec.get("cost_usd") is not None:
-        if judge_price.batch_multiplier is None:
-            _refuse_reuse(run_name, f"source was batch-priced and '{judge_price.model}' has no batch_multiplier in prices.yaml to recompute its judge cost")
-        rec["cost_usd"] = judge_rec["cost_usd"] / judge_price.batch_multiplier
+    if _source_is_batch(source) and judge_rec.get("cost_usd") is not None:
+        multipliers = (source.get("batch") or {}).get("price_multiplier") or {}
+        multiplier = multipliers.get(judge_price.model)
+        if multiplier is None:
+            multiplier = judge_price.batch_multiplier
+        if not multiplier:
+            _refuse_reuse(run_name, f"source was batch-priced, records no multiplier for '{judge_price.model}', and prices.yaml has no batch_multiplier for it; cannot rescale its judge cost")
+        rec["cost_usd"] = judge_rec["cost_usd"] / multiplier
     return rec
 
 
@@ -162,6 +174,9 @@ def _load_reuse_source(run_name, suite, incumbent_id, prices, state_dir, limit, 
         source = json.loads(raw)
     except json.JSONDecodeError as exc:
         _refuse_reuse(run_name, f"run.json is not valid JSON: {exc}")
+    # chained reuse: the source's incumbent slot is itself copied, so reuse the original
+    if source.get("reused_incumbent"):
+        _refuse_reuse(run_name, f"that run is itself a reuse run (it reused its incumbent from '{source['reused_incumbent'].get('run')}'); reuse the original run instead")
     # 1. which arm is M
     arms = [a for a in ("incumbent", "candidate") if source.get(a) == incumbent_id]
     if not arms:
@@ -194,21 +209,25 @@ def _load_reuse_source(run_name, suite, incumbent_id, prices, state_dir, limit, 
         _refuse_reuse(run_name, "the source run stopped early")
     if len(source_items) != len(suite.items) or source.get("items_total") != len(suite.items):
         _refuse_reuse(run_name, f"the source covers {len(source_items)} of {len(suite.items)} suite items")
-    is_batch = _source_is_batch(source, source_dir)
     judge_price = prices.rows[suite.judge.model] if suite.judge else None
     items = {}
+    carried = []
     for expected, rec in zip(suite.items, source_items):
         arm_rec = rec.get("id") == expected.id and rec.get(arm)
         judge_rec = (rec.get("judge") or {}).get(arm) if suite.judge else None
         if not arm_rec or (suite.judge and not judge_rec):
             _refuse_reuse(run_name, f"the source is incomplete at item '{expected.id}' (no {'judge record or ' if suite.judge else ''}arm record)")
+        if arm_rec.get("error"):
+            carried.append((expected.id, "arm error"))
+        if judge_rec and judge_rec.get("error"):
+            carried.append((expected.id, "judge error"))
         items[expected.id] = (
             _reprice_arm(arm_rec, price),
-            _reprice_judge(judge_rec, is_batch, judge_price, run_name) if suite.judge else None,
+            _reprice_judge(judge_rec, source, judge_price, run_name) if suite.judge else None,
         )
     return ReuseSource(
         run_name=run_name, arm_in_source=arm, sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
-        started_at=source.get("started_at"), items=items,
+        started_at=source.get("started_at"), items=items, carried_errors=carried,
     )
 
 
@@ -230,6 +249,15 @@ def plan(
     reuse = None
     if reuse_incumbent is not None:
         reuse = _load_reuse_source(reuse_incumbent, suite, incumbent_id, prices, state_dir, limit, batch)
+        if reuse.carried_errors:
+            # Warning, not a refusal (design pending): errors are carried over as recorded
+            # and nothing is re-judged, so the report will be INCOMPLETE.
+            print(
+                f"warning: reused incumbent from '{reuse_incumbent}' carries {len(reuse.carried_errors)} arm/judge error(s), "
+                f"first at item '{reuse.carried_errors[0][0]}' ({reuse.carried_errors[0][1]}); "
+                "the verdict will be INCOMPLETE because of carried-over errors",
+                file=sys.stderr,
+            )
 
     estimate_prices = _batch_prices(prices, incumbent_id, candidate_id, judge_id) if batch else prices
     estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, estimate_prices, limit=limit, state_dir=state_dir, judge_id=judge_id, reuse_incumbent=reuse is not None)
