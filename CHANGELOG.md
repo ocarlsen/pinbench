@@ -18,9 +18,11 @@ records marked "not judged" (the verdict is INCOMPLETE). `run.json` records `jud
 `--reuse-incumbent` (only the candidate's judge calls are batched). The report header notes
 `judge: batched (id ...)`.
 Batch API calls (create, poll, results) retry transient failures (429, 5xx, 529, timeouts,
-connection errors) with bounded exponential backoff, never other 4xx. A create with an unknown
-outcome is reconciled against the batch list before any retry (no idempotency key exists), and
-refuses to retry if that is ambiguous. A judge batch that times out now exits 5 and records its
+connection errors) with bounded exponential backoff, never other 4xx or a malformed result. A
+create is retried only after a 429 (no batch was created); any other transient create failure is
+an unknown outcome, never re-sent or adopted, recorded as `submit_outcome_unknown` at the
+reserved estimate with exit 1 (check the Anthropic console; judge-only resume of a recorded batch
+id is planned in a later PR). A judge batch that times out now exits 5 and records its
 spend as the reserved estimate, not 0. The arm phase reserves the judge batch's estimate under
 the cap, so the arms stop early instead of stranding the judging.
 

@@ -7,7 +7,6 @@ runner.py, report.py or cli.py (proven in the PR by reverting each in a scratch 
 
 from __future__ import annotations
 
-import datetime
 import io
 import json
 import urllib.error
@@ -409,17 +408,15 @@ class Flaky:
 
     def __init__(self, inner):
         self.inner = inner
-        self.faults = {"create": [], "get": [], "results": [], "list": []}
-        self.list_data = lambda: []
-        self.list_calls = 0
+        self.faults = {"create": [], "get": [], "results": []}
+        self.creates = 0
+        self.results_calls = 0
 
     @staticmethod
     def kind(req):
         url, method = req.full_url, req.get_method()
         if url.endswith("/results"):
             return "results"
-        if "/v1/messages/batches?" in url:
-            return "list"
         if method == "POST" and url.endswith("/v1/messages/batches"):
             return "create"
         if method == "GET":
@@ -428,13 +425,8 @@ class Flaky:
 
     def urlopen(self, req, timeout=None):
         kind = self.kind(req)
-        if kind == "list":
-            self.list_calls += 1
-            if self.faults["list"]:
-                fault = self.faults["list"].pop(0)
-                if fault is not None:
-                    raise fault
-            return _FakeResponse(json.dumps({"data": self.list_data(), "has_more": False}).encode("utf-8"))
+        self.creates += kind == "create"
+        self.results_calls += kind == "results"
         queue = self.faults.get(kind)
         if queue:
             fault = queue.pop(0)
@@ -453,14 +445,6 @@ def flaky(monkeypatch, fake_http):
     return f
 
 
-def _now():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-def _listed(batch_id, count=4):
-    return {"id": batch_id, "created_at": _now(), "request_counts": {"processing": count, "succeeded": 0, "errored": 0}}
-
-
 def _run_default(tmp_path, monkeypatch, *extra, n=2):
     return _run_cli(tmp_path, monkeypatch, _args(_suite_file(tmp_path, n=n), _prices_file(tmp_path), "--batch-judge", *extra))
 
@@ -472,12 +456,11 @@ def _assert_backoff(sleeps, count):
         assert base * 0.5 <= delay <= base
 
 
-def test_create_retries_429_without_listing(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+def test_create_retries_429_then_succeeds(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
     _script_judge_batch(fake_http)
     flaky.faults["create"] = [_http_error(429), _http_error(429)]
     assert _run_default(tmp_path, monkeypatch) == 0
     assert len(fake_http.create_posts) == 1
-    assert flaky.list_calls == 0  # a 429 never created a batch
     _assert_backoff(no_sleep, 2)
 
 
@@ -493,43 +476,58 @@ def test_create_does_not_retry_other_4xx(tmp_path, monkeypatch, fake_http, flaky
     assert "submission failed" in run["items"][0]["judge"]["incumbent"]["error"]
 
 
-def test_create_unknown_outcome_adopts_the_listed_batch_not_a_second_submit(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+@pytest.mark.parametrize("fault", [
+    ("after", TimeoutError("timed out")),  # the server accepted it, the reply was lost
+    ("after", ConnectionResetError("reset")),
+    _http_error(529),
+    _http_error(500),
+], ids=["timeout-after-accept", "reset-after-accept", "529", "500"])
+def test_non_429_create_failure_is_never_resent(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep, capsys, fault):
     _script_judge_batch(fake_http)
-    flaky.faults["create"] = [("after", TimeoutError("timed out"))]  # server accepted, reply lost
-    flaky.list_data = lambda: [_listed(JUDGE_BATCH), {"id": "old", "created_at": "2020-01-01T00:00:00Z", "request_counts": {"succeeded": 4}}]
-    assert _run_default(tmp_path, monkeypatch) == 0
-    assert len(fake_http.create_posts) == 1  # never submitted twice
-    assert flaky.list_calls == 1
-    assert _load(tmp_path)["judge_batch"]["id"] == JUDGE_BATCH
-
-
-def test_create_unknown_outcome_with_empty_list_retries(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
-    _script_judge_batch(fake_http)
-    flaky.faults["create"] = [_http_error(529)]  # rejected before the fake saw it
-    assert _run_default(tmp_path, monkeypatch) == 0
-    assert flaky.list_calls == 1 and len(fake_http.create_posts) == 1
-    _assert_backoff(no_sleep, 1)
-
-
-def test_create_unknown_outcome_ambiguous_list_refuses_to_retry(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep, capsys):
-    _script_judge_batch(fake_http)
-    flaky.faults["create"] = [("after", TimeoutError("timed out"))]
-    flaky.list_data = lambda: [_listed("msgbatch_a"), _listed("msgbatch_b")]
+    # a second create would find this queued response and succeed, hiding the bug in rc
+    flaky.faults["create"] = [fault]
     assert _run_default(tmp_path, monkeypatch) == 1
-    assert len(fake_http.create_posts) == 1 and no_sleep == []
+    assert flaky.creates == 1  # exactly one create call, ever
+    assert no_sleep == []
     run = _load(tmp_path)
     assert run["judge_batch"]["status"] == "submit_outcome_unknown"
+    assert run["judge_batch"]["id"] is None
     assert run["judge_batch"]["spend_basis"] == "reserved_estimate" and run["spent_usd"]["judge"] > 0
-    assert "msgbatch_a" in capsys.readouterr().err
+    assert "a batch may exist" in run["items"][0]["judge"]["incumbent"]["error"]
+    assert run["items"][0]["candidate"]["output"] == "echo:Q0?"  # arms kept
+    batch_json = json.loads((tmp_path / ".pinbench" / "runs" / "bj" / "batch.json").read_text())
+    assert batch_json["judge"]["status"] == "submit_outcome_unknown"
+    assert "Anthropic console" in capsys.readouterr().err
 
 
-def test_create_unknown_outcome_with_unreadable_list_refuses_to_retry(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+def test_429_create_is_retried_up_to_the_limit(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
     _script_judge_batch(fake_http)
-    flaky.faults["create"] = [("after", TimeoutError("timed out"))]
-    flaky.faults["list"] = [_http_error(500)]
+    flaky.faults["create"] = [_http_error(429)] * batch_mod.RETRY_ATTEMPTS
     assert _run_default(tmp_path, monkeypatch) == 1
-    assert len(fake_http.create_posts) == 1
-    assert _load(tmp_path)["judge_batch"]["status"] == "submit_outcome_unknown"
+    assert flaky.creates == batch_mod.RETRY_ATTEMPTS
+    _assert_backoff(no_sleep, batch_mod.RETRY_ATTEMPTS - 1)
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "submit_failed" and run["spent_usd"]["judge"] == 0.0  # a 429 created nothing
+
+
+def test_permanent_parse_failure_is_not_retried(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    fake_http.results[JUDGE_BATCH] = json.dumps({"custom_id": "0000-judge-incumbent", "result": {"type": "weird"}})
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert flaky.results_calls == 1 and no_sleep == []
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "results_failed" and run["spent_usd"]["judge"] > 0
+
+
+def test_malformed_jsonl_is_results_failed_at_the_reserved_estimate(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):
+    _script_judge_batch(fake_http)
+    fake_http.results[JUDGE_BATCH] = _judge_lines(1) + "\n{not json"
+    assert _run_default(tmp_path, monkeypatch) == 1
+    assert flaky.results_calls == 1 and no_sleep == []
+    run = _load(tmp_path)
+    assert run["judge_batch"]["status"] == "results_failed"  # not left at "submitted"
+    assert run["judge_batch"]["spend_basis"] == "reserved_estimate" and run["spent_usd"]["judge"] > 0
+    assert "not judged" in run["items"][0]["judge"]["incumbent"]["error"]
 
 
 def test_poll_and_results_retry_transient_failures(tmp_path, monkeypatch, fake_http, flaky, gemini_env, no_sleep):

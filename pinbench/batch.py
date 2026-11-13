@@ -373,9 +373,6 @@ def run_batch(
 # a jitter factor in [0.5, 1.0]. Tests inject `sleep_fn` and `rand_fn`.
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF_BASE_S = 2.0
-# A create reconciliation lists batches created since the attempt started, minus this slack
-# for clock skew between this machine and the API.
-RECONCILE_SKEW_S = 120
 
 
 class JudgeBatchError(RuntimeError):
@@ -414,67 +411,42 @@ def with_retry(fn, sleep_fn, rand_fn=None, attempts=None):
 
 
 class SubmitOutcomeUnknown(RuntimeError):
-    """A create timed out or failed after the server may have accepted it, and the batch list
-    could not settle whether it did. Retrying could submit (and bill) a second batch."""
+    """A create failed in a way that does not prove no batch was created (5xx, 529, timeout,
+    dropped connection). It is never re-sent: a batch may exist and bill."""
 
 
-def create_with_retry(requests, api_key, sleep_fn, rand_fn=None, now_fn=None, attempts=None):
-    """Create a Message Batch, retrying transient failures without ever submitting twice.
+def create_with_retry(requests, api_key, sleep_fn, rand_fn=None, attempts=None):
+    """Create a Message Batch. Retries ONLY after an HTTP 429, never anything else.
 
-    The Message Batches docs describe no idempotency key for create, so a blind retry after
-    an unknown outcome could create a SECOND billed batch. What the docs do offer: "You can
-    list all Message Batches in your Workspace using the list endpoint" and "Ensure each
-    request in the batch has a unique `custom_id`". A listed batch carries `created_at` and
-    `request_counts` but not its custom_ids, so the match is by creation time (since this
-    attempt started, minus clock-skew slack) and total request count.
+    The Message Batches docs describe no idempotency key for create, so a re-send after an
+    unknown outcome could create a SECOND billed batch. Listing recent batches and adopting
+    one by creation time and request count is not safe either: a sibling run in the same
+    workspace has the same custom_ids and request count, and adopting its batch would record
+    its verdicts as ours. So:
 
-    - HTTP 429: the request was rejected before any batch existed; retry directly.
+    - HTTP 429: the request was refused before any batch existed; retry with backoff.
     - Any other transient failure (5xx, 529, timeout, dropped connection): the outcome is
-      unknown, so list recent batches first. Exactly one match: that is our batch, adopt it.
-      No match: nothing was created, retry. Two or more matches, or the list itself failing:
-      raise SubmitOutcomeUnknown and do NOT retry (a refused retry costs a re-run; a wrong
-      one costs a second batch).
-    - Any other 4xx propagates unchanged.
+      unknown. Raise SubmitOutcomeUnknown; the caller records it and exits nonzero, and the
+      operator checks the Anthropic console for a batch.
+    - Any other 4xx propagates unchanged (a refusal; nothing was created).
     """
-    import datetime as _dt
     import random
 
     from .providers import anthropic as anthropic_mod
 
     rand_fn = rand_fn or random.random
-    now_fn = now_fn or (lambda: _dt.datetime.now(_dt.timezone.utc))
     attempts = attempts or RETRY_ATTEMPTS
-
-    def parse(ts):
-        return _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-
     for attempt in range(1, attempts + 1):
-        since = now_fn() - _dt.timedelta(seconds=RECONCILE_SKEW_S)
         try:
             return anthropic_mod.create_batch(requests, api_key)
         except anthropic_mod.BatchError as exc:
             if not exc.transient:
                 raise
             if exc.status != 429:
-                try:
-                    listed = anthropic_mod.list_batches(api_key)
-                except anthropic_mod.BatchError as list_exc:
-                    raise SubmitOutcomeUnknown(
-                        f"create_batch failed ({exc}) and the batch list could not be read ({list_exc}); "
-                        "not retrying, because the batch may exist"
-                    ) from exc
-                matches = [
-                    b for b in listed
-                    if parse(b.get("created_at") or "1970-01-01T00:00:00Z") >= since
-                    and sum((b.get("request_counts") or {}).values()) == len(requests)
-                ]
-                if len(matches) == 1:
-                    return matches[0]
-                if len(matches) > 1:
-                    raise SubmitOutcomeUnknown(
-                        f"create_batch failed ({exc}) and {len(matches)} recent batches of {len(requests)} requests exist "
-                        f"({', '.join(str(b.get('id')) for b in matches)}); not retrying, cannot tell which is ours"
-                    ) from exc
+                raise SubmitOutcomeUnknown(
+                    f"create_batch failed ({exc}); not re-sent, because the batch may exist and bill. "
+                    "Check the Anthropic console (Batches) for a batch created at about this time"
+                ) from exc
             if attempt == attempts:
                 raise BatchRetriesExhausted(f"{exc} (gave up after {attempts} attempts)") from exc
             sleep_fn(_backoff_s(attempt, rand_fn))
@@ -485,7 +457,7 @@ JUDGE_PENDING_NOTE = "not judged: the judge batch has not completed"
 
 def run_judge_batch(
     suite, items, result_items, judge_id, judge_price, reuse, meter, run_dir, run_name, persist,
-    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None, rand_fn=None, now_fn=None,
+    poll_interval_s=30, max_wait_s=86400, sleep_fn=None, print_fn=None, rand_fn=None,
 ):
     """`pinbench run --batch-judge`: judge the finished arms' outputs as ONE Message Batch.
 
@@ -507,7 +479,8 @@ def run_judge_batch(
 
     Transient failures (429, 5xx, 529, timeouts, dropped connections) on create, poll and
     results are retried `RETRY_ATTEMPTS` times with exponential backoff (`with_retry`); a
-    create whose outcome is unknown is reconciled first (`create_with_retry`). A batch whose
+    create is retried only after a 429; any other transient create failure is an unknown
+    outcome and is never re-sent (`create_with_retry`). A batch whose
     outcome or spend is unknown (timed out, polling or results failed after submit, submit
     outcome unknown) records its judge spend as the reserved estimate, never 0, because it
     may still bill; cost.py charges an unknown outcome at least its estimate for the same
@@ -585,13 +558,16 @@ def run_judge_batch(
         state["spend_basis"] = "reserved_estimate"
         _mark(note)
         persist(state, total_est, False)
+        if batch_id is None:
+            # no id to record, but batch.json still says a batch may exist
+            _write_batch_json(Path(run_dir), {"run_name": run_name, "arms": None, "judge": {"id": None, "status": status}})
         where = f"batch {batch_id} " if batch_id else ""
         raise JudgeBatchError(f"judge {where}{status}: {exc}") from exc
 
     try:
-        batch_obj = create_with_retry(requests, api_key, sleep_fn, rand_fn, now_fn)
+        batch_obj = create_with_retry(requests, api_key, sleep_fn, rand_fn)
     except SubmitOutcomeUnknown as exc:
-        _unresolved("submit_outcome_unknown", f"not judged: judge batch submission outcome unknown: {exc}", exc)
+        _unresolved("submit_outcome_unknown", f"not judged: judge batch submission outcome unknown, a batch may exist: {exc}", exc)
     except Exception as exc:  # noqa: BLE001 - record the failed submit, then re-raise
         # a definite failure: nothing was created, so nothing is spent
         state["status"] = "submit_failed"
