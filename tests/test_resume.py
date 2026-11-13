@@ -930,13 +930,20 @@ def test_hold_judge_on_errors_needs_batch_judge(tmp_path, monkeypatch, script):
         env.run(hold_judge_on_errors=True)
 
 
-def test_resume_comparability_refuses_a_hold_flag_mismatch(tmp_path, monkeypatch, fake_http, gemini_env, script):
+def test_resume_comparability_refuses_adding_the_hold_flag(tmp_path, monkeypatch, fake_http, gemini_env, script):
+    # Adding the hold to a run recorded without it is refused. Dropping it is allowed: see
+    # test_dropping_the_hold_on_resume_submits_once_skips_the_errored_arm_and_records_it.
     env = Env(tmp_path, n=2)
     script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
     _run_cli(tmp_path, monkeypatch, _hold_args(env))
+    path = tmp_path / ".pinbench" / "runs" / "bj" / "run.json"
+    rec = json.loads(path.read_text())
+    rec["run_modes"]["hold_judge_on_errors"] = False  # a run recorded without the hold
+    path.write_text(json.dumps(rec))
     script.reset()
     with pytest.raises(runner_mod.PlanRefused, match="--hold-judge-on-errors differs"):
-        env.run(name=None, resume="bj", batch_judge=True)
+        env.run(name=None, resume="bj", batch_judge=True, hold_judge_on_errors=True)
+    assert script.arm_calls == [] and fake_http.create_posts == []
 
 
 def test_a_lower_cap_on_resume_still_collects_the_recorded_batch(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
@@ -952,3 +959,45 @@ def test_a_lower_cap_on_resume_still_collects_the_recorded_batch(tmp_path, monke
     assert _run_cli(tmp_path, monkeypatch, args) == 0
     out = env.load("bj")
     assert len(fake_http.create_posts) == 1 and out["status"] == "complete" and out["judge_batch"]["id"] == JUDGE_BATCH
+
+
+# --- dropping --hold-judge-on-errors on a resume (follow-up to #28, issue #30) ----------------
+
+def _failing_cand_q1(script):
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+
+
+def _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script):
+    env = Env(tmp_path, n=2)
+    _failing_cand_q1(script)
+    assert _run_cli(tmp_path, monkeypatch, _hold_args(env)) == resume_mod.EXIT_QUOTA_STOP
+    return env
+
+
+def test_dropping_the_hold_on_resume_submits_once_skips_the_errored_arm_and_records_it(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    script.reset()
+    _failing_cand_q1(script)  # the item keeps failing on the resume too
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 3}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 3})]
+    fake_http.results[JUDGE_BATCH] = "\n".join(line for line in _judge_lines(2).split("\n") if "0001-judge-candidate" not in line)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0  # without --hold-judge-on-errors
+    assert script.arm_calls == [(CAND, "Q1?")]  # the errored arm was re-run once, as any resume does
+    assert len(fake_http.create_posts) == 1
+    rec = env.load("bj")
+    assert rec["status"] == "stopped" and rec["stop_reason"] == "arm_errors_judged"  # final, not resumable
+    assert rec["judge_batch"]["status"] == "ended"
+    assert rec["run_modes"]["hold_judge_on_errors"] is False
+    assert rec["items"][1]["judge"]["candidate"]["skipped"]  # the errored arm was skipped, not judged
+    assert rec["resumes"]["history"][-1]["hold_released_at"] == rec["resumes"]["history"][-1]["resumed_at"]
+    capsys.readouterr()
+    cli_mod.main(["report", "bj", "--state", env.state])
+    out = capsys.readouterr().out
+    assert "judge batch was released with 1 candidate arm error(s) still present" in out
+    assert "cannot be resumed" in out
+
+
+def test_held_run_message_names_the_escape(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    _held_run_with_a_stubborn_error(tmp_path, monkeypatch, script)
+    err = capsys.readouterr().err
+    assert "if an item keeps failing, resume without --hold-judge-on-errors to judge the rest" in err

@@ -159,7 +159,7 @@ def cmd_run(args):
         if stop_reason == resume_mod.STOP_QUOTA:
             why = "the provider kept returning 429 / quota exhausted after retries"
         elif not_submitted:
-            why = f"the judge batch was not submitted ({(record.get('judge_batch') or {}).get('reason')}); --hold-judge-on-errors submits it only over a finished arm phase with no arm errors"
+            why = f"the judge batch was not submitted ({(record.get('judge_batch') or {}).get('reason')}); --hold-judge-on-errors submits it only over a finished arm phase with no arm errors; if an item keeps failing, resume without --hold-judge-on-errors to judge the rest"
         else:
             why = f"stopped by {record.get('stop_signal')}"
         print(f"stopped: {why}. Every finished item is saved. Resume with:\n  {_resume_command(args, record['run_name'])}", file=sys.stderr)

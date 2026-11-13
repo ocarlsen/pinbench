@@ -216,6 +216,10 @@ def _resume_line(run: dict) -> Optional[str]:
     resumes = run.get("resumes")
     if resumes:
         parts.append(f"Resumed {resumes['count']} time(s); last at {resumes['history'][-1]['resumed_at']}. Items that finished before a stop were kept as recorded (a truncated output is a result, not a failure); errored and never-attempted items were run on resume.")
+    released = [h["hold_released_at"] for h in (resumes or {}).get("history", []) if h.get("hold_released_at")]
+    if released:
+        n = sum(1 for r in run.get("items", []) if (r.get("candidate") or {}).get("error"))
+        parts.append(f"The --hold-judge-on-errors hold was released at {released[0]}: the judge batch was released with {n} candidate arm error(s) still present (those arms were recorded as skipped, not judged).")
     if run.get("status") == "in_progress":
         parts.append("IN PROGRESS: this run.json is a checkpoint, not a finished run (it crashed or is still running).")
     elif run.get("status") == "stopped" and run.get("stop_reason"):

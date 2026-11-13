@@ -692,7 +692,10 @@ def _check_resumable(prior, name, suite, incumbent_id, candidate_id, inc_params,
     modes = prior.get("run_modes") or {}
     if bool(modes.get("batch_judge")) != bool(batch_judge):
         differs("--batch-judge", bool(modes.get("batch_judge")), bool(batch_judge))
-    if bool(modes.get("hold_judge_on_errors")) != bool(hold_judge_on_errors):
+    # The hold only decides WHEN the judge batch is sent, not what is measured, so dropping it on
+    # a resume is allowed (a run whose item errors every time could never be judged otherwise).
+    # Adding it is refused: a run that already submitted, or might have, must not be held late.
+    if bool(hold_judge_on_errors) and not bool(modes.get("hold_judge_on_errors")):
         differs("--hold-judge-on-errors", bool(modes.get("hold_judge_on_errors")), bool(hold_judge_on_errors))
     if modes.get("limit") != limit:
         differs("--limit", modes.get("limit"), limit)
@@ -898,13 +901,15 @@ def _run(
                 plan_result.estimate,
             )
         prev_resumes = prior.get("resumes") or {"count": 0, "history": []}
-        resumes = {
-            "count": prev_resumes["count"] + 1,
-            "history": prev_resumes["history"] + [{
-                "resumed_at": _now(), "items_recorded_before": len(prior.get("items", [])),
-                "spent_usd_before": spent.get("total"), "prior_status": prior["status"], "prior_stop_reason": prior.get("stop_reason"),
-            }],
+        resumed_at = _now()
+        entry = {
+            "resumed_at": resumed_at, "items_recorded_before": len(prior.get("items", [])),
+            "spent_usd_before": spent.get("total"), "prior_status": prior["status"], "prior_stop_reason": prior.get("stop_reason"),
         }
+        if (prior.get("run_modes") or {}).get("hold_judge_on_errors") and not hold_judge_on_errors:
+            # run_modes.hold_judge_on_errors is recorded false from here on; this keeps the trail.
+            entry["hold_released_at"] = resumed_at
+        resumes = {"count": prev_resumes["count"] + 1, "history": prev_resumes["history"] + [entry]}
 
     def _all_items():
         """Finished items, then (on a resume) the stored records of the items not reached yet,
