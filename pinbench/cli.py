@@ -140,6 +140,7 @@ def cmd_run(args):
             max_wait_s=args.max_wait,
             timeout_s=args.timeout_s,
             resume=args.resume,
+            hold_judge_on_errors=args.hold_judge_on_errors,
         )
     except runner_mod.RunCapExceeded as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -153,12 +154,12 @@ def cmd_run(args):
 
     zero_success_arms, truncated_arms = _print_arm_lines(record)
     stop_reason = record.get("stop_reason") or ""
-    not_submitted = stop_reason.startswith("judge_batch_not_submitted")
+    not_submitted = stop_reason == "judge_batch_not_submitted"
     if record.get("status") == "stopped" and (stop_reason == resume_mod.STOP_QUOTA or stop_reason.startswith("signal:") or not_submitted):
         if stop_reason == resume_mod.STOP_QUOTA:
             why = "the provider kept returning 429 / quota exhausted after retries"
         elif not_submitted:
-            why = f"the judge batch was not submitted ({stop_reason.split(':', 1)[1]}); it is submitted only over a finished arm phase with no arm errors"
+            why = f"the judge batch was not submitted ({(record.get('judge_batch') or {}).get('reason')}); --hold-judge-on-errors submits it only over a finished arm phase with no arm errors"
         else:
             why = f"stopped by {record.get('stop_signal')}"
         print(f"stopped: {why}. Every finished item is saved. Resume with:\n  {_resume_command(args, record['run_name'])}", file=sys.stderr)
@@ -203,6 +204,8 @@ def _resume_command(args, run_name):
         parts.append("--allow-self-judge")
     if args.batch_judge:
         parts.append("--batch-judge")
+    if args.hold_judge_on_errors:
+        parts.append("--hold-judge-on-errors")
     if args.timeout_s != runner_mod.DEFAULT_TIMEOUT_S:
         parts += ["--timeout", str(args.timeout_s)]
     parts += ["--resume", run_name]
@@ -316,7 +319,7 @@ def cmd_report(args):
         # still shown, its verdict INCOMPLETE, and exits 0 as an errored run always has.
         print(
             f"note: run status is {run.get('status')!r}, not complete; no verdict.json was written. "
-            f"Finish it with pinbench run ... --resume {run['run_name']}",
+            + (resume_mod.final_stop_text(run) if run.get("stop_reason") in resume_mod.FINAL_STOPS else f"Finish it with pinbench run ... --resume {run['run_name']}"),
             file=sys.stderr,
         )
         return 1 if run.get("status") == "in_progress" else 0
@@ -422,6 +425,7 @@ def build_parser():
     p_run = sub.add_parser("run", help="run both arms over a suite")
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None, help="run directory name (default: suite-UTCstamp-random); refused if runs/NAME/run.json exists unless --resume NAME")
+    p_run.add_argument("--hold-judge-on-errors", action="store_true", dest="hold_judge_on_errors", help="with --batch-judge: submit the judge batch only if the arm phase finished with every arm succeeded or truncated; otherwise stop resumable (exit 6) and print the resume command")
     p_run.add_argument("--resume", default=None, metavar="NAME", help="continue the stopped or crashed run NAME: skips finished items, re-runs errored and never-attempted ones, counts spend so far against --cap; refuses unless suite, arms, request params, judge and reuse source match what the run recorded")
     p_run.add_argument("--timeout", type=_positive_int, default=runner_mod.DEFAULT_TIMEOUT_S, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
     p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch or --batch-judge)")

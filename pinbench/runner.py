@@ -661,7 +661,7 @@ def _load_resumable(state_dir, name):
     return prior
 
 
-def _check_resumable(prior, name, suite, incumbent_id, candidate_id, inc_params, cand_params, plan_result, limit, batch_judge):
+def _check_resumable(prior, name, suite, incumbent_id, candidate_id, inc_params, cand_params, plan_result, limit, batch_judge, hold_judge_on_errors=False):
     """Every comparability refusal, before any call. A resumed run must be the SAME measurement."""
     def differs(what, recorded, now):
         _refuse_resume(name, f"{what} differs: the run recorded {recorded!r}, this command has {now!r}")
@@ -692,6 +692,8 @@ def _check_resumable(prior, name, suite, incumbent_id, candidate_id, inc_params,
     modes = prior.get("run_modes") or {}
     if bool(modes.get("batch_judge")) != bool(batch_judge):
         differs("--batch-judge", bool(modes.get("batch_judge")), bool(batch_judge))
+    if bool(modes.get("hold_judge_on_errors")) != bool(hold_judge_on_errors):
+        differs("--hold-judge-on-errors", bool(modes.get("hold_judge_on_errors")), bool(hold_judge_on_errors))
     if modes.get("limit") != limit:
         differs("--limit", modes.get("limit"), limit)
 
@@ -738,7 +740,7 @@ def _run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
     batch=False, reuse_incumbent=None, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
-    batch_judge=False, resume=None, sleep_fn=None, _stack=None,
+    batch_judge=False, resume=None, sleep_fn=None, hold_judge_on_errors=False, _stack=None,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -770,6 +772,8 @@ def _run(
         raise PlanRefused(f"--timeout must be a positive number of seconds, got {timeout_s!r}")
     if (batch or batch_judge) and poll_interval_s < 1:
         raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
+    if hold_judge_on_errors and not batch_judge:
+        raise PlanRefused("--hold-judge-on-errors applies only with --batch-judge")
     if resume and batch:
         raise PlanRefused("--resume does not apply to a --batch run (its arms are one batch)")
     if resume and name and name != resume:
@@ -826,12 +830,13 @@ def _run(
     started_at = _now()
     prog = _Progress()
     prior_items = {}
+    carried = {"jb": None, "spent": 0.0}
     attach_id = None
     resumes = None
     meter = cost_mod.CostMeter(cap_usd=cap_usd)
 
     if prior is not None:
-        _check_resumable(prior, resume, suite, incumbent_id, candidate_id, inc_params, cand_params, plan_result, limit, batch_judge)
+        _check_resumable(prior, resume, suite, incumbent_id, candidate_id, inc_params, cand_params, plan_result, limit, batch_judge, hold_judge_on_errors)
         started_at = prior.get("started_at") or started_at
         prior_items = {rec["id"]: rec for rec in prior.get("items", [])}
         spent = prior.get("spent_usd") or {}
@@ -847,6 +852,12 @@ def _run(
         if batch_judge:
             attach_id = _judge_resume_decision(prior)
             prog.spent_judge = 0.0
+            if prior.get("judge_batch") is not None:
+                # Until run_judge_batch writes its own state, every write keeps the recorded
+                # batch and its spend: a kill after the claim write must not forget the id
+                # (the next resume would submit a second batch).
+                carried["jb"] = prior["judge_batch"]
+                carried["spent"] = float(spent.get("judge") or 0.0)
         else:
             prog.spent_judge = float(spent.get("judge") or 0.0)
         meter.spent_usd = prog.spent_incumbent + prog.spent_candidate + prog.spent_judge
@@ -902,6 +913,8 @@ def _run(
         return prog.result_items + tail
 
     def _write(judge_spent, status, judge_batch=None, stop_reason=None, stop_signal=None):
+        if judge_batch is None and carried["jb"] is not None:
+            judge_batch, judge_spent = carried["jb"], carried["spent"]
         rec = _build_record(
             run_name, suite, suite_path, incumbent_id, candidate_id, started_at, _now(), cap_usd,
             plan_result, prog.spent_incumbent, prog.spent_candidate, judge_spent, prog.stopped_early, items,
@@ -914,7 +927,7 @@ def _run(
         if status == "in_progress":
             rec["finished_at"] = None
         rec["items_recorded"] = len(prog.result_items)
-        rec["run_modes"] = {"batch": False, "batch_judge": bool(batch_judge), "limit": limit}
+        rec["run_modes"] = {"batch": False, "batch_judge": bool(batch_judge), "hold_judge_on_errors": bool(hold_judge_on_errors), "limit": limit}
         if stop_reason:
             rec["stop_reason"] = stop_reason
         if stop_signal:
@@ -977,6 +990,15 @@ def _run(
             for r in prog.result_items
         )
 
+    if batch_judge and hold_judge_on_errors and not hard_stop and not attach_id:
+        # Opt-in hold: the batch is paid and all-or-nothing, so submit it only over a finished
+        # arm phase in which every arm succeeded or was truncated.
+        why = "early_stop" if prog.stopped_early else (None if _arms_all_ok() else "arm_errors")
+        if why is not None:
+            return _write(
+                prog.spent_judge, "stopped", {"status": "not_submitted", "reason": why}, stop_reason="judge_batch_not_submitted",
+            )
+
     if batch_judge and not hard_stop:
         from . import batch as batch_mod
 
@@ -984,6 +1006,7 @@ def _run(
         final = {}
 
         def _persist(judge_state, judge_spent, stopped):
+            carried["jb"] = None  # run_judge_batch now owns the judge state
             st = judge_state.get("status")
             if st in _JB_STOPPED or stopped or prog.stopped_early:
                 status = "stopped"
@@ -991,7 +1014,14 @@ def _run(
                 status = "complete" if _arms_all_ok() else "stopped"
             else:
                 status = "in_progress"
-            reason = stop_reason if (stopped or prog.stopped_early) else (f"judge_batch:{st}" if status == "stopped" and st not in _JB_DONE else ("arm_errors" if status == "stopped" else None))
+            if status == "stopped" and st in _JB_DONE:
+                # The batch ended: it judged what it judged and a resume refuses to submit
+                # another, so this stop is final, not resumable.
+                reason = "cap_judged" if (stopped or prog.stopped_early) else "arm_errors_judged"
+            elif stopped or prog.stopped_early:
+                reason = stop_reason
+            else:
+                reason = f"judge_batch:{st}" if status == "stopped" else None
             if prog.stopped_early or stopped:
                 prog.stopped_early = True
             final["record"] = _write(judge_spent, status, judge_state, stop_reason=reason)

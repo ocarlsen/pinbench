@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from . import resume as resume_mod
 from . import scoring as scoring_mod
 from . import suite as suite_mod
 from . import verdict as verdict_mod
@@ -218,7 +219,10 @@ def _resume_line(run: dict) -> Optional[str]:
     if run.get("status") == "in_progress":
         parts.append("IN PROGRESS: this run.json is a checkpoint, not a finished run (it crashed or is still running).")
     elif run.get("status") == "stopped" and run.get("stop_reason"):
-        parts.append(f"STOPPED ({run['stop_reason']}); resume it to finish.")
+        if run["stop_reason"] in resume_mod.FINAL_STOPS:
+            parts.append(resume_mod.final_stop_text(run))
+        else:
+            parts.append(f"STOPPED ({run['stop_reason']}); resume it to finish.")
     return " ".join(parts) or None
 
 

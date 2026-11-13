@@ -17,7 +17,7 @@ from test_batch import (  # noqa: F401 - the fixtures must be importable to be u
     FakeBatchHTTP, _batch_obj, _run_cli, fake_http, no_sleep,
 )
 from test_batch_judge import (  # noqa: F401
-    GEMINI, JUDGE, JUDGE_BATCH, _args, _judge_lines, _prices_file, _suite_file, gemini_env,
+    GEMINI, _script_judge_batch, JUDGE, JUDGE_BATCH, _args, _judge_lines, _prices_file, _suite_file, gemini_env,
 )
 
 from pinbench import cli as cli_mod
@@ -657,7 +657,7 @@ def test_collect_with_errored_arms_remaining_keeps_them_and_never_resubmits(tmp_
     assert len(fake_http.create_posts) == 1 and script.arm_calls == []  # nothing re-run, nothing re-submitted
     out = env.load("bj")
     assert out["judge_batch"]["status"] == "ended" and out["items"][1]["candidate"]["error"] == "HTTP 500: boom"
-    assert out["status"] == "stopped" and out["stop_reason"] == "arm_errors"  # not called complete
+    assert out["status"] == "stopped" and out["stop_reason"] == "arm_errors_judged"  # not complete, and final
 
 
 def test_a_failing_checkpoint_does_not_duplicate_the_item(tmp_path, script, monkeypatch):
@@ -804,3 +804,151 @@ def test_the_batch_wait_interrupt_message_points_at_resume(tmp_path, monkeypatch
     _first_batch_run(tmp_path, monkeypatch)
     err = capsys.readouterr().err
     assert "--resume bj" in err and "re-submits" not in err
+
+
+# --- round 3 --------------------------------------------------------------------------------
+
+def test_a_resume_killed_after_the_claim_write_does_not_forget_the_recorded_batch(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
+    env = _timed_out_run(tmp_path, monkeypatch, fake_http)
+    before = env.load("bj")
+    assert before["judge_batch"]["id"] == JUDGE_BATCH and before["spent_usd"]["judge"] > 0
+    real = runner_mod._write_run_json
+    calls = {"n": 0}
+
+    def killed_after_claim(state_dir, name, record):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise KeyboardInterrupt  # the process dies right after the claim write
+        return real(state_dir, name, record)
+
+    monkeypatch.setattr(runner_mod, "_write_run_json", killed_after_claim)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 130
+    monkeypatch.setattr(runner_mod, "_write_run_json", real)
+    claimed = env.load("bj")
+    assert claimed["judge_batch"]["id"] == JUDGE_BATCH  # the claim write kept the id
+    assert claimed["spent_usd"]["judge"] == before["spent_usd"]["judge"]  # and its reserved spend
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 4})]
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    assert len(fake_http.create_posts) == 1  # exactly one create, ever
+    assert env.load("bj")["judge_batch"]["id"] == JUDGE_BATCH and env.load("bj")["status"] == "complete"
+
+
+def _assert_final_dead_end(tmp_path, monkeypatch, env, capsys, reason):
+    rec = env.load("bj")
+    assert rec["status"] == "stopped" and rec["stop_reason"] == reason
+    capsys.readouterr()
+    monkeypatch.chdir(tmp_path)
+    cli_mod.main(["report", "bj", "--state", env.state])
+    captured = capsys.readouterr()
+    out = captured.out
+    assert "cannot be resumed" in out and "resume it to finish" not in out  # the report tells the truth
+    assert "cannot be resumed" in captured.err and "--resume bj" not in captured.err  # and so does its closing note
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 2
+    assert "already ended" in capsys.readouterr().err  # which is what --resume really does
+
+
+def test_arm_errors_with_an_ended_batch_are_final_not_resumable(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = Env(tmp_path, n=2)
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+    fake_http.create_responses.append(_batch_obj(JUDGE_BATCH, "in_progress", {"processing": 3}))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 3})]
+    fake_http.results[JUDGE_BATCH] = "\n".join(line for line in _judge_lines(2).split("\n") if "0001-judge-candidate" not in line)
+    _run_cli(tmp_path, monkeypatch, _args(env.suite_path, env.prices_path, "--batch-judge", name="bj"))
+    _assert_final_dead_end(tmp_path, monkeypatch, env, capsys, "arm_errors_judged")
+
+
+def test_cap_stop_with_an_ended_batch_is_final_not_resumable(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = Env(tmp_path, n=2)
+    plan = runner_mod.plan(env.suite(), INC, GEMINI, env.prices(), batch_judge=True)
+    reserve, est_cand1 = plan.estimate.judge.cost_usd, plan.estimate.candidate.items[1].cost_usd
+    cap = 2.0
+    ok = lambda i, o: providers.Reply(output="ok", input_tokens=i, output_tokens=o, latency_ms=1, stop_reason="end_turn")
+    gemini_env.set_reply(INC, "Q0?", ok(100, 10))
+    gemini_env.set_reply(GEMINI, "Q0?", ok(100, 10))
+    spent0 = (100 * 2.0 + 10 * 10.0) / 1e6 + (100 * 1.0 + 10 * 4.0) / 1e6
+    gemini_env.set_reply(INC, "Q1?", ok(round((cap - est_cand1 - reserve / 2 - spent0) / 2.0 * 1e6), 0))
+    _script_judge_batch(fake_http, n=1)
+    args = _args(env.suite_path, env.prices_path, "--batch-judge")
+    args[args.index("--cap") + 1] = str(cap)
+    _run_cli(tmp_path, monkeypatch, args)
+    _assert_final_dead_end(tmp_path, monkeypatch, env, capsys, "cap_judged")
+
+
+def test_collect_with_errored_arms_is_reported_final(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = _timed_out_run(tmp_path, monkeypatch, fake_http)
+    path = tmp_path / ".pinbench" / "runs" / "bj" / "run.json"
+    rec = json.loads(path.read_text())
+    rec["items"][1]["candidate"] = dict(rec["items"][1]["candidate"], output=None, error="HTTP 500: boom", stop_reason=None)
+    rec["items"][1]["judge"]["candidate"] = {"hit": [], "extra": 0, "notes": "", "error": None, "cost_usd": 0.0, "skipped": "skipped: arm error"}
+    path.write_text(json.dumps(rec))
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 3})]
+    fake_http.results[JUDGE_BATCH] = "\n".join(line for line in _judge_lines(2).split("\n") if "0001-judge-candidate" not in line)
+    assert _run_cli(tmp_path, monkeypatch, _resume_args(env)) == 0
+    _assert_final_dead_end(tmp_path, monkeypatch, env, capsys, "arm_errors_judged")
+
+
+def _hold_args(env, *extra, name="bj"):
+    return _args(env.suite_path, env.prices_path, "--batch-judge", "--hold-judge-on-errors", *extra, name=name)
+
+
+def test_hold_judge_on_errors_does_not_submit_over_an_errored_arm(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep, capsys):
+    env = Env(tmp_path, n=2)
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+    rc = _run_cli(tmp_path, monkeypatch, _hold_args(env))
+    assert rc == resume_mod.EXIT_QUOTA_STOP
+    assert fake_http.create_posts == []
+    rec = env.load("bj")
+    assert rec["status"] == "stopped" and rec["stop_reason"] == "judge_batch_not_submitted"
+    assert rec["judge_batch"] == {"status": "not_submitted", "reason": "arm_errors"}
+    err = capsys.readouterr().err
+    assert "--batch-judge --hold-judge-on-errors --resume bj" in err  # the printed command repeats the flag
+
+
+def test_hold_judge_on_errors_resume_fixes_the_arm_then_submits_once(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
+    env = Env(tmp_path, n=2)
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+    assert _run_cli(tmp_path, monkeypatch, _hold_args(env)) == 6
+    script.reset()
+    _script_judge_batch(fake_http, n=2)
+    args = ["run", str(env.suite_path), "--incumbent", INC, "--candidate", CAND, "--cap", "5.0", "--prices", str(env.prices_path),
+            "--batch-judge", "--hold-judge-on-errors", "--resume", "bj"]
+    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    assert script.arm_calls == [(CAND, "Q1?")]  # only the errored arm was re-run
+    assert len(fake_http.create_posts) == 1
+    rec = env.load("bj")
+    assert rec["status"] == "complete" and rec["judge_batch"]["status"] == "ended"
+    # resuming without the flag it was recorded with is a different measurement
+    assert _run_cli(tmp_path, monkeypatch, args[:-3] + ["--resume", "bj"]) == 2
+
+
+def test_hold_judge_on_errors_needs_batch_judge(tmp_path, monkeypatch, script):
+    env = Env(tmp_path, n=1)
+    rc = _run_cli(tmp_path, monkeypatch, _args(env.suite_path, env.prices_path, "--hold-judge-on-errors", name="x"))
+    assert rc == 2 and script.arm_calls == []
+    with pytest.raises(runner_mod.PlanRefused, match="--hold-judge-on-errors applies only"):
+        env.run(hold_judge_on_errors=True)
+
+
+def test_resume_comparability_refuses_a_hold_flag_mismatch(tmp_path, monkeypatch, fake_http, gemini_env, script):
+    env = Env(tmp_path, n=2)
+    script.on(CAND, "Q1?", lambda: providers.Reply(output=None, input_tokens=None, output_tokens=None, latency_ms=1, error="HTTP 500: boom", status_code=500))
+    _run_cli(tmp_path, monkeypatch, _hold_args(env))
+    script.reset()
+    with pytest.raises(runner_mod.PlanRefused, match="--hold-judge-on-errors differs"):
+        env.run(name=None, resume="bj", batch_judge=True)
+
+
+def test_a_lower_cap_on_resume_still_collects_the_recorded_batch(tmp_path, monkeypatch, fake_http, gemini_env, script, no_sleep):
+    env = _timed_out_run(tmp_path, monkeypatch, fake_http)
+    rec = env.load("bj")
+    arms = rec["spent_usd"]["incumbent"] + rec["spent_usd"]["candidate"]
+    reserved = rec["judge_batch"]["reserved_usd"]
+    cap = arms + reserved * 0.1  # room for the arms, none for a whole judge batch
+    fake_http.status_sequences[JUDGE_BATCH] = [_batch_obj(JUDGE_BATCH, "ended", {"succeeded": 4})]
+    fake_http.results[JUDGE_BATCH] = _judge_lines(2)
+    args = ["run", str(env.suite_path), "--incumbent", INC, "--candidate", CAND, "--cap", repr(cap), "--prices", str(env.prices_path),
+            "--batch-judge", "--resume", "bj"]
+    assert _run_cli(tmp_path, monkeypatch, args) == 0
+    out = env.load("bj")
+    assert len(fake_http.create_posts) == 1 and out["status"] == "complete" and out["judge_batch"]["id"] == JUDGE_BATCH

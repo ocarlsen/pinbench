@@ -27,6 +27,16 @@ RATE_LIMIT_BACKOFF_MAX_S = 300.0
 # Exit codes owned by this module (documented in docs/commands.md).
 EXIT_QUOTA_STOP = 6
 STOP_QUOTA = "quota_or_rate_limit"
+# A --batch-judge run whose judge batch already ended but whose arms had errors or stopped on
+# the cap: the batch is paid and final, `--resume` refuses it, so these stops are NOT resumable.
+FINAL_STOPS = ("arm_errors_judged", "cap_judged")
+
+
+def final_stop_text(run) -> str:
+    return (
+        f"FINAL ({run.get('stop_reason')}): the judge batch has already ended and judged this run, so it cannot be resumed "
+        "(`--resume` refuses it). Fix the arm errors and start a new run (`--reuse-incumbent` keeps the incumbent)."
+    )
 
 # Substrings of a provider error that mean quota or rate limit when no HTTP status was kept.
 # Gemini RESOURCE_EXHAUSTED and OpenAI insufficient_quota both arrive with HTTP 429 as well.
