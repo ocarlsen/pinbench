@@ -49,6 +49,7 @@ class PlanResult:
     judge_id: Optional[str] = None
     batch: bool = False
     reuse: Optional["ReuseSource"] = None
+    batch_judge: bool = False
 
 
 def _require_price_and_route(model_id, prices):
@@ -79,6 +80,18 @@ def _check_batch_provider(incumbent_id, candidate_id, judge_id):
                 f"--batch is Anthropic-only; '{model_id}' ({label}) cannot be batched; "
                 "a mixed run is never half-batched"
             )
+
+
+def _check_batch_judge(suite, judge_id, prices, batch):
+    """--batch-judge: only the judge goes through the Message Batches API, so only the judge
+    must be Anthropic and carry a batch_multiplier. Every refusal is before any spend."""
+    if batch:
+        raise PlanRefused("--batch-judge and --batch are mutually exclusive: --batch already batches the judge")
+    if judge_id is None:
+        raise PlanRefused("--batch-judge needs a suite with a judge; this suite has none")
+    if providers.provider_for_id(judge_id) != "anthropic":
+        raise PlanRefused(f"--batch-judge is Anthropic-only; judge '{judge_id}' cannot be batched")
+    _batch_prices(prices, judge_id)  # raises PlanRefused when the judge row has no batch_multiplier
 
 
 def _batch_prices(prices, *model_ids) -> "prices_mod.Prices":
@@ -144,18 +157,27 @@ def _reprice_judge(judge_rec, source, judge_price, run_name):
     source recorded for the judge model (batch.price_multiplier[judge model]). If the source
     says batch but records no multiplier for the judge, fall back to the batch_multiplier on
     today's price row (the best available figure), and refuse if that is absent too. A sync
-    source is carried over unchanged. The as-recorded figure is kept as reused_cost_usd."""
+    source is carried over unchanged. The as-recorded figure is kept as reused_cost_usd.
+
+    A `--batch-judge` source (run.json `judge_batch`; its arms were sync-priced and it has no
+    `batch` block) rescales its judge cost by `judge_batch.price_multiplier` the same way. It
+    is never mistaken for a batch-priced source, whose ARMS were batch-priced."""
     rec = dict(judge_rec)
     rec["reused_cost_usd"] = judge_rec.get("cost_usd")
-    if _source_is_batch(source) and judge_rec.get("cost_usd") is not None:
-        multipliers = (source.get("batch") or {}).get("price_multiplier") or {}
-        multiplier = multipliers.get(judge_price.model)
+    judge_batched = bool(source.get("judge_batch"))
+    if (_source_is_batch(source) or judge_batched) and judge_rec.get("cost_usd") is not None:
+        if judge_batched:
+            multiplier = source["judge_batch"].get("price_multiplier")
+        else:
+            multipliers = (source.get("batch") or {}).get("price_multiplier") or {}
+            multiplier = multipliers.get(judge_price.model)
         if multiplier is None:
             multiplier = judge_price.batch_multiplier
         else:
             # same rule prices.load applies to batch_multiplier: a number, > 0 and <= 1
             if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or not (0 < multiplier <= 1):
-                _refuse_reuse(run_name, f"source records batch.price_multiplier[{judge_price.model!r}] = {multiplier!r}; it must be a number > 0 and <= 1")
+                where = "judge_batch.price_multiplier" if judge_batched else f"batch.price_multiplier[{judge_price.model!r}]"
+                _refuse_reuse(run_name, f"source records {where} = {multiplier!r}; it must be a number > 0 and <= 1")
         if not multiplier:
             _refuse_reuse(run_name, f"source was batch-priced, records no multiplier for '{judge_price.model}', and prices.yaml has no batch_multiplier for it; cannot rescale its judge cost")
         rec["cost_usd"] = judge_rec["cost_usd"] / multiplier
@@ -246,7 +268,7 @@ def _load_reuse_source(run_name, suite, incumbent_id, prices, state_dir, limit, 
 
 def plan(
     suite, incumbent_id, candidate_id, prices, cap_usd=None, limit=None, state_dir=None,
-    allow_self_judge=False, batch=False, reuse_incumbent=None,
+    allow_self_judge=False, batch=False, reuse_incumbent=None, batch_judge=False,
 ) -> PlanResult:
     judge_id = suite.judge.model if suite.judge else None
     try:
@@ -258,6 +280,8 @@ def plan(
         raise PlanRefused(str(exc)) from exc
     if batch:
         _check_batch_provider(incumbent_id, candidate_id, judge_id)
+    if batch_judge:
+        _check_batch_judge(suite, judge_id, prices, batch)
     _check_self_judge(judge_id, incumbent_id, candidate_id, allow_self_judge)
     reuse = None
     if reuse_incumbent is not None:
@@ -279,12 +303,17 @@ def plan(
                 file=sys.stderr,
             )
 
-    estimate_prices = _batch_prices(prices, incumbent_id, candidate_id, judge_id) if batch else prices
+    if batch:
+        estimate_prices = _batch_prices(prices, incumbent_id, candidate_id, judge_id)
+    elif batch_judge:
+        estimate_prices = _batch_prices(prices, judge_id)  # only the judge row is discounted
+    else:
+        estimate_prices = prices
     estimate = cost_mod.estimate_run(suite, incumbent_id, candidate_id, estimate_prices, limit=limit, state_dir=state_dir, judge_id=judge_id, reuse_incumbent=reuse is not None)
     within_cap = None if cap_usd is None else estimate.total_usd <= cap_usd
     return PlanResult(
         incumbent_id=incumbent_id, candidate_id=candidate_id, estimate=estimate, cap_usd=cap_usd,
-        within_cap=within_cap, judge_id=judge_id, batch=batch, reuse=reuse,
+        within_cap=within_cap, judge_id=judge_id, batch=batch, reuse=reuse, batch_judge=batch_judge,
     )
 
 
@@ -345,12 +374,16 @@ class _ArmStats:
             self.first_error = reply.error
 
 
-def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None):
+def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None, judge_reserve_usd=0.0):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
     meter stops it. Never aborts a call in flight.
 
     `reuse` (a ReuseSource) fills the incumbent slot from stored records: no incumbent call,
-    no incumbent judge call, nothing charged to the meter for either."""
+    no incumbent judge call, nothing charged to the meter for either.
+
+    `judge_reserve_usd` (--batch-judge) is the judge batch's estimate: every arm call's meter
+    check must leave that much room under the cap, so the arms stop early rather than spend
+    the cap and strand the batch the run was meant to end with."""
     inc_params = _merged_params(inc_price, suite)
     cand_params = _merged_params(cand_price, suite)
     result_items = []
@@ -372,7 +405,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 inc_cost = reused_arm["cost_usd"]
                 inc_stats.record(inc_reply)
             else:
-                if not meter.check(inc_estimates[item.id]):
+                if not meter.check(inc_estimates[item.id] + judge_reserve_usd):
                     stopped_early = True
                     break
                 inc_reply = _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s)
@@ -380,7 +413,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                 inc_cost = meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, inc_estimates[item.id]), inc_estimates[item.id])
                 spent_incumbent += inc_cost
 
-            if not meter.check(cand_estimates[item.id]):
+            if not meter.check(cand_estimates[item.id] + judge_reserve_usd):
                 stopped_early = True
                 result_items.append(_item_record(item, inc_reply, inc_cost, candidate=None, candidate_cost=None, incumbent_record=reused_arm))
                 break
@@ -428,6 +461,7 @@ def run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
     batch=False, reuse_incumbent=None, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
+    batch_judge=False,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -441,18 +475,22 @@ def run(
     batch discount instead of one call per item -- see `batch.run_batch`. The pre-spend
     checks (cap, price/route, self-judge, plus the Anthropic-only check) are identical; only
     how the calls are made and metered differs.
+
+    `batch_judge=True` runs the arms synchronously as usual, writes them to run.json, then
+    sends every judge call as ONE Message Batch at the judge's batch price -- see
+    `batch.run_judge_batch`. Incompatible with `batch`; the judge alone must be Anthropic.
     """
     if cap_usd is None:
         raise PlanRefused("a cost cap is required: set --cap, the suite's cap_usd, or pinbench.yaml's cap_usd")
 
     if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or timeout_s <= 0:
         raise PlanRefused(f"--timeout must be a positive number of seconds, got {timeout_s!r}")
-    if batch and poll_interval_s < 1:
+    if (batch or batch_judge) and poll_interval_s < 1:
         raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
 
     plan_result = plan(
         suite, incumbent_id, candidate_id, prices, cap_usd=cap_usd, limit=limit, state_dir=state_dir,
-        allow_self_judge=allow_self_judge, batch=batch, reuse_incumbent=reuse_incumbent,
+        allow_self_judge=allow_self_judge, batch=batch, reuse_incumbent=reuse_incumbent, batch_judge=batch_judge,
     )
     if not plan_result.within_cap:
         raise RunCapExceeded(
@@ -490,25 +528,49 @@ def run(
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     result_items, stopped_early, spent_incumbent, spent_candidate, spent_judge, inc_params, cand_params, arm_stats, unexpected = _execute_items(
-        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=judge_ctx,
-        timeout_s=timeout_s, reuse=plan_result.reuse,
+        items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys,
+        judge_ctx=None if batch_judge else judge_ctx, timeout_s=timeout_s, reuse=plan_result.reuse,
+        judge_reserve_usd=plan_result.estimate.judge.cost_usd if batch_judge and plan_result.estimate.judge else 0.0,
     )
 
-    finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    record = _build_record(
-        run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
-        plan_result, spent_incumbent, spent_candidate, spent_judge, stopped_early, items, inc_params, cand_params, result_items, arm_stats,
-    )
-    record["effective_config"] = effective_config
-    record["timeout_s"] = timeout_s
-    if plan_result.reuse is not None:
-        reuse = plan_result.reuse
-        record["reused_incumbent"] = {
-            "run": reuse.run_name, "arm_in_source": reuse.arm_in_source,
-            "source_run_sha256": reuse.sha256, "source_started_at": reuse.started_at,
-        }
+    def _write(judge_spent, stopped, judge_batch=None):
+        finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        rec = _build_record(
+            run_name, suite, suite_path, incumbent_id, candidate_id, started_at, finished_at, cap_usd,
+            plan_result, spent_incumbent, spent_candidate, judge_spent, stopped, items, inc_params, cand_params, result_items, arm_stats,
+        )
+        rec["effective_config"] = effective_config
+        rec["timeout_s"] = timeout_s
+        if plan_result.reuse is not None:
+            reuse = plan_result.reuse
+            rec["reused_incumbent"] = {
+                "run": reuse.run_name, "arm_in_source": reuse.arm_in_source,
+                "source_run_sha256": reuse.sha256, "source_started_at": reuse.started_at,
+            }
+        if judge_batch is not None:
+            # Its own key, NOT `batch`: `_source_is_batch` reads `batch` to mean the ARMS
+            # were batch-priced, which they were not.
+            rec["judge_batch"] = judge_batch
+        _write_run_json(state_dir, run_name, rec)
+        return rec
 
-    _write_run_json(state_dir, run_name, record)
+    if batch_judge and unexpected is None:
+        from . import batch as batch_mod
+
+        # Arms go to run.json inside run_judge_batch's first persist, before any submit.
+        final = {}
+
+        def _persist(judge_state, judge_spent, stopped):
+            final["record"] = _write(judge_spent, stopped or stopped_early, judge_state)
+
+        batch_mod.run_judge_batch(
+            suite, items, result_items, plan_result.judge_id, prices.rows[plan_result.judge_id].at_batch(), plan_result.reuse,
+            meter, Path(state_dir) / "runs" / run_name, run_name, _persist,
+            poll_interval_s=poll_interval_s, max_wait_s=max_wait_s,
+        )
+        return final["record"]
+
+    record = _write(spent_judge, stopped_early)
     if unexpected is not None:
         raise unexpected
     return record

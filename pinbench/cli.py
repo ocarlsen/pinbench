@@ -2,7 +2,7 @@
 
 Refuses to do: let any subcommand touch the network or write a pin outside the documented
 exit codes (0 ok, 1 error, 2 refusal before spend, 3 cap exceeded, 4 a `run` arm had zero
-successes). A `run` with SOME but not all items completed on both arms still exits 0 (a
+successes, 5 a `--batch-judge` batch timed out). A `run` with SOME but not all items completed on both arms still exits 0 (a
 printed warning, not a refusal); only a wholly-failed arm is treated as a hard failure. A
 `run` arm with any truncated output (the model hit max_output_tokens) also still exits 0,
 with a loud warning naming the count -- `report` is where truncation becomes a hard
@@ -64,7 +64,7 @@ def cmd_plan(args):
     try:
         result = runner_mod.plan(
             suite, args.incumbent, args.candidate, prices, cap_usd=cap_usd, limit=args.limit,
-            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge, batch=args.batch, reuse_incumbent=args.reuse_incumbent,
+            state_dir=paths["runs"][0], allow_self_judge=args.allow_self_judge, batch=args.batch, reuse_incumbent=args.reuse_incumbent, batch_judge=args.batch_judge,
         )
     except runner_mod.PlanRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -84,13 +84,14 @@ def cmd_plan(args):
         print(line)
     if result.estimate.judge is not None:
         judge_price = prices.rows[result.judge_id]
-        judge_disp_price = judge_price.at_batch() if args.batch else judge_price
+        judge_batched = args.batch or args.batch_judge
+        judge_disp_price = judge_price.at_batch() if judge_batched else judge_price
         judge_calls = len(result.estimate.judge.items)
         line = (
             f"{'judge':<9} {result.judge_id:<24} {judge_calls:>3} calls  est ${result.estimate.judge.cost_usd:.4f}  "
             f"(${judge_disp_price.input:.2f}/${judge_disp_price.output:.2f} per Mtok)"
         )
-        if args.batch:
+        if judge_batched:
             line += f"  [batch]  batch_multiplier {judge_price.batch_multiplier} (prices.yaml)"
         print(line)
     total = result.estimate.total_usd
@@ -131,6 +132,7 @@ def cmd_run(args):
             effective_config=effective,
             batch=args.batch,
             reuse_incumbent=args.reuse_incumbent,
+            batch_judge=args.batch_judge,
             poll_interval_s=args.poll_interval,
             max_wait_s=args.max_wait,
             timeout_s=args.timeout_s,
@@ -164,6 +166,14 @@ def cmd_run(args):
         for arm in scoring_mod.judge_arms_fully_skipped(record):
             n = scoring_mod.judge_skipped_count(record, arm)
             print(f"warning: judge was never called for {arm} (all {n} item(s) skipped: truncated/error)", file=sys.stderr)
+    judge_batch = record.get("judge_batch") or {}
+    if judge_batch.get("status") == "timed_out":
+        print(
+            f"error: judge batch {judge_batch.get('id')} did not finish within --max-wait and is still running; "
+            f"no item was judged, and its cost is recorded as the reserved estimate ${record['spent_usd'].get('judge', 0.0):.4f}",
+            file=sys.stderr,
+        )
+        return 5
     return 0
 
 
@@ -344,6 +354,10 @@ def _add_arm_args(p):
         help="send every Anthropic arm (and judge, if any) as one Message Batch at the batch discount; Anthropic-only",
     )
     p.add_argument(
+        "--batch-judge", action="store_true", dest="batch_judge",
+        help="run the arms synchronously, then send every judge call as ONE Message Batch at the judge's batch price; the judge must be Anthropic with a batch_multiplier; not with --batch",
+    )
+    p.add_argument(
         "--reuse-incumbent", default=None, metavar="RUN",
         help="reuse the incumbent's stored outputs and judge records from run RUN instead of calling it again; refuses unless suite, judge and request params match (not with --limit or --batch)",
     )
@@ -367,8 +381,8 @@ def build_parser():
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None)
     p_run.add_argument("--timeout", type=_positive_int, default=runner_mod.DEFAULT_TIMEOUT_S, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
-    p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch only)")
-    p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch only)")
+    p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch or --batch-judge)")
+    p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch or --batch-judge)")
     p_run.set_defaults(func=cmd_run)
 
     p_vote = sub.add_parser("vote", help="build the blind A/B vote page")

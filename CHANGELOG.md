@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+`run --batch-judge` / `plan --batch-judge`: run the arms synchronously, then send every judge call
+as one Anthropic Message Batch at the judge row's `batch_multiplier`. A judged run with a
+non-Anthropic arm (Gemini) cannot use `--batch`, which is all-or-nothing and Anthropic-only, so its
+Anthropic judge paid full price; this halves just the judge. Refuses before any spend with
+`--batch`, a suite with no judge, a non-Anthropic judge, or a judge row with no `batch_multiplier`.
+Judge request bodies come from the same builder as a sync judge call, and arms the judge skips
+(errored, empty, truncated) are recorded as skipped and not sent. The cap is checked against arms
+spend plus the whole batch estimate before submitting; actual token cost is charged at the batch
+price after the results arrive. The arms are written to `run.json` before the batch is submitted,
+the id goes to `batch.json`, and a batch that outlasts `--max-wait` is left running with the judge
+records marked "not judged" (the verdict is INCOMPLETE). `run.json` records `judge_batch`, not
+`batch`, and `--reuse-incumbent` of such a run rescales the judge cost by
+`judge_batch.price_multiplier` while treating its arm cost as sync-priced. Works with
+`--reuse-incumbent` (only the candidate's judge calls are batched). The report header notes
+`judge: batched (id ...)`.
+Batch API calls (create, poll, results) retry transient failures (429, 5xx, 529, timeouts,
+connection errors) with bounded exponential backoff, never other 4xx or a malformed result. A
+create is retried only after a 429 (no batch was created); any other transient create failure is
+an unknown outcome, never re-sent or adopted, recorded as `submit_outcome_unknown` at the
+reserved estimate with exit 1 (check the Anthropic console; judge-only resume of a recorded batch
+id is planned in a later PR). A judge batch that times out now exits 5 and records its
+spend as the reserved estimate, not 0. The arm phase reserves the judge batch's estimate under
+the cap, so the arms stop early instead of stranding the judging.
+
 The cost meter no longer under-charges an errored reply that carries billed tokens (issue #20,
 follow-up to the Gemini continuation change). `cost.actual_call_cost` now takes the call's
 estimate and, for an errored reply with both token counts, charges the tokens at price for an

@@ -42,7 +42,21 @@ class NoNetwork(RuntimeError):
 
 
 class BatchError(RuntimeError):
-    """Raised on a non-2xx response from a batch endpoint (create/retrieve/results/cancel)."""
+    """Raised on a non-2xx response from a batch endpoint (create/retrieve/results/cancel),
+    or when the request never got a response (timeout, connection drop).
+
+    `status` is the HTTP code, or None when there was no response. `transient` is True for
+    the failures worth retrying: 429, any 5xx (529 included) and no response at all. Every
+    other 4xx is a real refusal and is never retried."""
+
+    def __init__(self, message, status=None, permanent=False):
+        super().__init__(message)
+        self.status = status
+        self.permanent = permanent  # a malformed result that retrying cannot change
+
+    @property
+    def transient(self) -> bool:
+        return not self.permanent and (self.status is None or self.status == 429 or 500 <= self.status <= 599)
 
 
 def _guard_network():
@@ -145,7 +159,8 @@ def reply_from_batch_result(line: dict):
         if not isinstance(message, dict):
             raise BatchError(
                 f"batch result {line.get('custom_id')!r}: type 'succeeded' with no 'message' object "
-                f"(unconfirmed shape, refusing to guess): {result!r}"
+                f"(unconfirmed shape, refusing to guess): {result!r}",
+                permanent=True,
             )
         return _reply_from_message(message, latency_ms=None)
     if rtype in ("errored", "canceled", "expired"):
@@ -154,7 +169,7 @@ def reply_from_batch_result(line: dict):
             output=None, input_tokens=None, output_tokens=None, latency_ms=None,
             error=f"batch {rtype}: {detail[:200]}", status_code=400,
         )
-    raise BatchError(f"batch result {line.get('custom_id')!r}: unknown result type {rtype!r} (refusing to guess)")
+    raise BatchError(f"batch result {line.get('custom_id')!r}: unknown result type {rtype!r} (refusing to guess)", permanent=True)
 
 
 def _batch_headers(api_key):
@@ -167,7 +182,7 @@ def _open_batch_request(req, timeout, action):
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise BatchError(f"{action} HTTP {exc.code}: {detail[:200]}") from exc
+        raise BatchError(f"{action} HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise BatchError(f"{action}: {exc}") from exc
     except (OSError, ValueError, http.client.HTTPException) as exc:
@@ -225,15 +240,21 @@ def fetch_results(batch_id, api_key, timeout=120) -> list:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise BatchError(f"fetch_results HTTP {exc.code}: {detail[:200]}") from exc
+        raise BatchError(f"fetch_results HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise BatchError(f"fetch_results: {exc}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # a read timeout or a dropped connection while reading the results body
+        raise BatchError(f"fetch_results: {type(exc).__name__}: {exc}") from exc
     results = []
     for raw_line in raw.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        results.append(json.loads(line))
+        try:
+            results.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise BatchError(f"fetch_results: malformed JSONL line: {exc}", permanent=True) from exc
     return results
 
 
