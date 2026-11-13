@@ -140,8 +140,6 @@ def cmd_run(args):
             max_wait_s=args.max_wait,
             timeout_s=args.timeout_s,
             resume=args.resume,
-            resubmit_judge=args.resubmit_judge,
-            judge_batch_id=args.judge_batch_id,
         )
     except runner_mod.RunCapExceeded as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -155,10 +153,16 @@ def cmd_run(args):
 
     zero_success_arms, truncated_arms = _print_arm_lines(record)
     stop_reason = record.get("stop_reason") or ""
-    if record.get("status") == "stopped" and (stop_reason == resume_mod.STOP_QUOTA or stop_reason.startswith("signal:")):
-        why = "the provider kept returning 429 / quota exhausted after retries" if stop_reason == resume_mod.STOP_QUOTA else f"stopped by {record.get('stop_signal')}"
+    not_submitted = stop_reason.startswith("judge_batch_not_submitted")
+    if record.get("status") == "stopped" and (stop_reason == resume_mod.STOP_QUOTA or stop_reason.startswith("signal:") or not_submitted):
+        if stop_reason == resume_mod.STOP_QUOTA:
+            why = "the provider kept returning 429 / quota exhausted after retries"
+        elif not_submitted:
+            why = f"the judge batch was not submitted ({stop_reason.split(':', 1)[1]}); it is submitted only over a finished arm phase with no arm errors"
+        else:
+            why = f"stopped by {record.get('stop_signal')}"
         print(f"stopped: {why}. Every finished item is saved. Resume with:\n  {_resume_command(args, record['run_name'])}", file=sys.stderr)
-        return resume_mod.EXIT_QUOTA_STOP if stop_reason == resume_mod.STOP_QUOTA else resume_mod.exit_code_for_signal(record["stop_signal"])
+        return resume_mod.exit_code_for_signal(record["stop_signal"]) if stop_reason.startswith("signal:") else resume_mod.EXIT_QUOTA_STOP
     if zero_success_arms:
         print(f"error: zero successes on: {', '.join(zero_success_arms)}", file=sys.stderr)
         return 4
@@ -306,6 +310,16 @@ def cmd_report(args):
 
     run_dir = _run_dir(args.state, args.run_name)
     (run_dir / "report.md").write_text(report_mod.render(run, suite, result, fmt="md"))
+    if run.get("status") not in (None, "complete"):
+        # Never a verdict.json (the thing `bump` trusts) for a run that is not finished. A
+        # checkpoint of a run in progress is a refusal (exit 1); a stopped run's report is
+        # still shown, its verdict INCOMPLETE, and exits 0 as an errored run always has.
+        print(
+            f"note: run status is {run.get('status')!r}, not complete; no verdict.json was written. "
+            f"Finish it with pinbench run ... --resume {run['run_name']}",
+            file=sys.stderr,
+        )
+        return 1 if run.get("status") == "in_progress" else 0
     report_mod.write_verdict_record(run_dir, run, result, votes_path=args.votes)
     return 0
 
@@ -409,8 +423,6 @@ def build_parser():
     _add_arm_args(p_run)
     p_run.add_argument("--name", default=None, help="run directory name (default: suite-UTCstamp-random); refused if runs/NAME/run.json exists unless --resume NAME")
     p_run.add_argument("--resume", default=None, metavar="NAME", help="continue the stopped or crashed run NAME: skips finished items, re-runs errored and never-attempted ones, counts spend so far against --cap; refuses unless suite, arms, request params, judge and reuse source match what the run recorded")
-    p_run.add_argument("--resubmit-judge", action="store_true", dest="resubmit_judge", help="with --resume --batch-judge: submit a NEW judge batch although the recorded submit outcome is unknown (a batch may exist; check the Anthropic console first)")
-    p_run.add_argument("--judge-batch-id", default=None, dest="judge_batch_id", metavar="ID", help="with --resume --batch-judge: attach a judge batch found in the Anthropic console instead of submitting one")
     p_run.add_argument("--timeout", type=_positive_int, default=runner_mod.DEFAULT_TIMEOUT_S, dest="timeout_s", help="seconds to wait for each arm and judge call before giving up (default 60; not used with --batch)")
     p_run.add_argument("--poll-interval", type=_positive_int, default=30, dest="poll_interval", help="seconds between batch status polls (--batch or --batch-judge)")
     p_run.add_argument("--max-wait", type=int, default=86400, dest="max_wait", help="seconds to wait for a batch before giving up, leaving it running (--batch or --batch-judge)")

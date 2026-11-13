@@ -9,7 +9,9 @@ Everything tunable about the 429 policy lives in this file. Tests inject `sleep_
 
 from __future__ import annotations
 
+import os
 import signal
+import sys
 import threading
 import time
 
@@ -61,13 +63,17 @@ def backoff_s(attempt) -> float:
     return min(RATE_LIMIT_BACKOFF_BASE_S * 2 ** (attempt - 1), RATE_LIMIT_BACKOFF_MAX_S)
 
 
-def call_with_rate_limit_retry(call, price, estimate_usd, sleep_fn=None):
+def call_with_rate_limit_retry(call, price, estimate_usd, sleep_fn=None, meter=None, stop=None):
     """Run `call()` (returns a providers.Reply), retrying only while the reply is a 429 or a
     quota error. Returns (final_reply, prior_cost_usd): `prior_cost_usd` is what the failed
     attempts cost under the ordinary cost rule (`cost.actual_call_cost`: $0 for a bare 4xx,
-    billed tokens when the reply carries them, the estimate when the outcome is unknown), so
-    the caller can charge it and never loses billed tokens to a retry. The final reply is
-    returned as is, rate-limited or not; the caller decides to stop."""
+    billed tokens when the reply carries them, the estimate when the outcome is unknown). With
+    a `meter`, each failed attempt is charged to it as it happens (so the next retry's cap
+    check sees it) and the caller only adds `prior_cost_usd` to the item's recorded cost.
+
+    No retry is made once `stop()` is true (a signal is pending) or the meter has no room for
+    another call of this size; the last reply is returned as is, rate-limited or not, and the
+    caller decides to stop."""
     sleep_fn = sleep_fn or time.sleep
     prior = 0.0
     for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
@@ -75,7 +81,12 @@ def call_with_rate_limit_retry(call, price, estimate_usd, sleep_fn=None):
         if not is_rate_limited(reply) or attempt == RATE_LIMIT_ATTEMPTS:
             return reply, prior
         cost = cost_mod.actual_call_cost(reply, price, estimate_usd)
-        prior += estimate_usd if cost is None else cost
+        cost = estimate_usd if cost is None else cost
+        prior += cost
+        if meter is not None:
+            meter.charge(cost, cost)
+        if (stop is not None and stop()) or (meter is not None and not meter.check(estimate_usd)):
+            return reply, prior
         sleep_fn(backoff_s(attempt))
 
 
@@ -101,6 +112,9 @@ class SignalGuard:
     def handle(self, signum, _frame=None):
         if self.graceful and self.requested is None:
             self.requested = signum
+            sys.stderr.write(
+                "finishing the call in flight, then saving; press again to abandon it (charged at its estimate)\n"
+            )
             return
         if self.requested is None:
             self.requested = signum
@@ -125,3 +139,48 @@ class SignalGuard:
 
 def exit_code_for_signal(name) -> int:
     return 128 + int(getattr(signal.Signals, name))
+
+
+class RunLock:
+    """runs/NAME/run.lock holding this process's pid. A live pid refuses (two processes would
+    overwrite each other's checkpoints); a dead pid is a stale lock and is taken over with a
+    warning. Removed on exit. A guard against a second `--resume` of a running run, not a
+    cross-machine lock."""
+
+    def __init__(self, run_dir, refuse):
+        self.path = os.path.join(str(run_dir), "run.lock")
+        self._refuse = refuse
+        self._held = False
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        if os.path.exists(self.path):
+            try:
+                pid = int(open(self.path).read().strip())
+            except ValueError:
+                pid = None
+            if pid is not None and pid != os.getpid() and self._alive(pid):
+                self._refuse(f"run is locked by live process {pid} ({self.path})")
+            print(f"warning: taking over a stale run lock ({self.path}, pid {pid})", file=sys.stderr)
+        with open(self.path, "w") as f:
+            f.write(str(os.getpid()))
+        self._held = True
+        return self
+
+    def __exit__(self, *exc):
+        if self._held:
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
+        return False

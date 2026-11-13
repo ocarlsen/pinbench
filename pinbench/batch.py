@@ -485,7 +485,7 @@ def run_judge_batch(
     outcome unknown) records its judge spend as the reserved estimate, never 0, because it
     may still bill; cost.py charges an unknown outcome at least its estimate for the same
     reason. Retries running out raises `JudgeBatchError` after persisting.
-    `attach_id` (run --resume of a recorded batch, or --judge-batch-id): no cap check and no
+    `attach_id` (run --resume of a recorded batch): no cap check and no
     create; the batch with that id is polled and its results collected, so a resume never
     submits a second batch. Records that already carry a `judge` block (a resumed run) keep
     their recorded call_order and reused-incumbent judge record.
@@ -606,7 +606,7 @@ def run_judge_batch(
             f"\nbatch {batch_id} is still running (results kept 29 days). "
             f"Cancel: curl -X POST https://api.anthropic.com/v1/messages/batches/{batch_id}/cancel "
             "-H \"x-api-key: $ANTHROPIC_API_KEY\" -H \"anthropic-version: 2023-06-01\". "
-            "Re-running the same command re-submits (and pays again).",
+            f"Continue with the same command plus --resume {run_name}: it collects this batch and never submits another.",
             file=sys.stderr,
         )
         raise

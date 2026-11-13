@@ -404,6 +404,23 @@ def _judge_ok(judge_rec, arms):
     return bool(judge_rec) and all(arm in judge_rec and judge_rec[arm].get("error") is None for arm in arms)
 
 
+def _charge_inflight(prog, meter, inflight, judge_before):
+    """A call abandoned in flight (a second signal, a crash mid-call) has an unknown outcome:
+    charge its estimate, as cost.py does for any unknown outcome, never $0. For a judge call the
+    judge calls that finished earlier in the stage were charged to the meter but not yet added
+    to the run's judge spend; add those too."""
+    if inflight is None:
+        return
+    kind, est = inflight
+    meter.charge(est, est)
+    if kind == "incumbent":
+        prog.spent_incumbent += est
+    elif kind == "candidate":
+        prog.spent_candidate += est
+    else:
+        prog.spent_judge += (meter.spent_usd - judge_before) if judge_before is not None else est
+
+
 def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys, judge_ctx=None, timeout_s=DEFAULT_TIMEOUT_S, reuse=None, judge_reserve_usd=0.0,
                    prior=None, progress=None, checkpoint=None, guard=None, sleep_fn=None):
     """Run every item through both arms (then the judge, if judge_ctx is given) until the
@@ -446,8 +463,12 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
         inc_rec = cand_rec = None
         reused_judge = None
         fresh = False
+        n_before = len(prog.result_items)
+        inflight = None  # (kind, estimate_usd) of a call started and not yet charged
 
         def partial():
+            if len(prog.result_items) > n_before:
+                return  # this item is already recorded (a checkpoint failed after it was appended)
             if inc_reply is not None:
                 prog.result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, incumbent_record=inc_rec, candidate_record=cand_rec))
             elif prev is not None:
@@ -475,15 +496,17 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                     stop("cap")
                     break
                 est = inc_estimates[item.id]
+                inflight = ("incumbent", est)
                 inc_reply, retried = resume_mod.call_with_rate_limit_retry(
-                    lambda: _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s), inc_price, est, sleep_fn)
+                    lambda: _call_arm(incumbent_id, suite, item, inc_params, api_keys, timeout_s), inc_price, est, sleep_fn, meter=meter, stop=signalled)
                 fresh = True
                 prog.inc_stats.record(inc_reply)
-                inc_cost = meter.charge(retried, retried) + meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, est), est)
+                inc_cost = retried + meter.charge(cost_mod.actual_call_cost(inc_reply, inc_price, est), est)
+                inflight = None
                 prog.spent_incumbent += inc_cost
                 if resume_mod.is_rate_limited(inc_reply):
                     partial()
-                    stop(resume_mod.STOP_QUOTA)
+                    stop("signal" if signalled() else resume_mod.STOP_QUOTA)
                     break
 
             if _arm_ok(prev_cand):
@@ -501,15 +524,17 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                     stop("cap")
                     break
                 est = cand_estimates[item.id]
+                inflight = ("candidate", est)
                 cand_reply, retried = resume_mod.call_with_rate_limit_retry(
-                    lambda: _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s), cand_price, est, sleep_fn)
+                    lambda: _call_arm(candidate_id, suite, item, cand_params, api_keys, timeout_s), cand_price, est, sleep_fn, meter=meter, stop=signalled)
                 fresh = True
                 prog.cand_stats.record(cand_reply)
-                cand_cost = meter.charge(retried, retried) + meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price, est), est)
+                cand_cost = retried + meter.charge(cost_mod.actual_call_cost(cand_reply, cand_price, est), est)
+                inflight = None
                 prog.spent_candidate += cand_cost
                 if resume_mod.is_rate_limited(cand_reply):
                     partial()
-                    stop(resume_mod.STOP_QUOTA)
+                    stop("signal" if signalled() else resume_mod.STOP_QUOTA)
                     break
 
             # --batch-judge (no sync judge stage): the stored judge block, with its recorded
@@ -527,19 +552,23 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
                     # Both arms are handed to the judge stage regardless of whether either errored
                     # or was cut off -- judge.run_judge_stage (via judge.skip_reason) decides per arm
                     # whether to actually call the judge or just record "skipped", never the caller.
+                    judge_before = meter.spent_usd
+                    inflight = ("judge", cost_mod.estimate_judge_call_cost(suite, item, judge_ctx["price"]))
                     try:
                         judge_record, judge_stopped = judge_mod.run_judge_stage(
                             meter, judge_ctx["id"], judge_ctx["price"], judge_ctx["api_key"], suite, item,
                             {"incumbent": inc_reply, "candidate": cand_reply}, timeout_s=timeout_s,
-                            only_arms=("candidate",) if reuse is not None else None, sleep_fn=sleep_fn,
+                            only_arms=("candidate",) if reuse is not None else None, sleep_fn=sleep_fn, stop=signalled,
                         )
+                        inflight = None
                     except resume_mod.RateLimitExhausted as exc:
+                        inflight = None
                         judge_record = exc.record
                         if reuse is not None:
                             judge_record["incumbent"] = reused_judge
                         prog.spent_judge += sum(judge_record[a]["cost_usd"] for a in judge_arms if a in judge_record)
                         prog.result_items.append(_item_record(item, inc_reply, inc_cost, cand_reply, cand_cost, judge_record, incumbent_record=inc_rec, candidate_record=cand_rec))
-                        stop(resume_mod.STOP_QUOTA)
+                        stop("signal" if signalled() else resume_mod.STOP_QUOTA)
                         break
                     if reuse is not None:
                         judge_record["incumbent"] = reused_judge
@@ -552,6 +581,8 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             if judge_ctx is not None and prog.stopped_early:
                 break
             if checkpoint is not None:
+                # The item is already appended: if this write fails, `partial()` sees that and
+                # does not append it a second time.
                 checkpoint(prog)
         except Exception as exc:  # noqa: BLE001 - keep every paid output, then re-raise from run()
             # Anything the adapters did not turn into a Reply error (a bug, an odd exception)
@@ -560,6 +591,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             prog.unexpected = exc
             prog.stopped_early = True
             prog.stop_reason = f"error: {type(exc).__name__}: {exc}"
+            _charge_inflight(prog, meter, inflight, judge_before if inflight and inflight[0] == "judge" else None)
             partial()
             break
         except BaseException:
@@ -567,6 +599,7 @@ def _execute_items(items, suite, incumbent_id, candidate_id, inc_price, cand_pri
             # finished half of this item, mark the run stopped, and let it propagate.
             prog.stopped_early = True
             prog.stop_reason = "interrupted"
+            _charge_inflight(prog, meter, inflight, judge_before if inflight and inflight[0] == "judge" else None)
             partial()
             raise
 
@@ -663,52 +696,49 @@ def _check_resumable(prior, name, suite, incumbent_id, candidate_id, inc_params,
         differs("--limit", modes.get("limit"), limit)
 
 
-def _judge_resume_decision(prior, arms_todo, resubmit_judge, judge_batch_id):
-    """For a --batch-judge resume: (attach_id or None, carried_judge_usd). Raises PlanRefused.
-
-    attach_id: poll and collect that recorded batch, never create. carried_judge_usd: judge
-    spend that stays on the books because a batch may still bill (a resubmit after an unknown
-    submit outcome); a collected batch's reserved estimate is replaced by its actual cost."""
+def _judge_resume_decision(prior):
+    """For a --batch-judge resume: the recorded batch id to collect, or None to submit. Raises
+    PlanRefused. A recorded id is always collected and never re-created (even with errored arms
+    remaining: those arms were skipped when the batch was built, so its custom_ids still match).
+    A submit whose outcome is unknown (no id recorded) is refused: a batch may exist and bill,
+    and recovering from that is out of scope; check the Anthropic console."""
     name = prior["run_name"]
     jb = prior.get("judge_batch")
     if jb is None:
-        if judge_batch_id or resubmit_judge:
-            _refuse_resume(name, "the run has no recorded judge batch yet (the arms had not finished); --judge-batch-id and --resubmit-judge do not apply")
-        return None, 0.0
+        return None
     status, bid = jb.get("status"), jb.get("id")
-    if arms_todo:
-        _refuse_resume(name, f"the run recorded a judge batch (status {status!r}) but arm work remains; a resume cannot attach new arms to an existing batch")
     if status in _JB_DONE:
         _refuse_resume(name, "the judge batch already ended; nothing to collect")
     if status in _JB_COLLECT and bid:
-        if resubmit_judge:
-            _refuse_resume(name, f"judge batch {bid} is recorded and may still bill; --resubmit-judge would pay twice. Omit it to collect that batch")
-        if judge_batch_id and judge_batch_id != bid:
-            _refuse_resume(name, f"the run records judge batch {bid}; --judge-batch-id {judge_batch_id} differs")
-        return bid, 0.0
+        return bid
     if status in _JB_SUBMIT:
-        if judge_batch_id:
-            return judge_batch_id, 0.0
-        return None, 0.0
+        return None
     if status in _JB_UNKNOWN:
-        if judge_batch_id:
-            return judge_batch_id, 0.0
-        if not resubmit_judge:
-            _refuse_resume(
-                name,
-                f"the judge batch submission outcome is unknown (status {status!r}, no batch id recorded): a batch may exist and bill. "
-                "Check the Anthropic console (Batches) first. If you find it, pass --judge-batch-id ID; "
-                "if there is none, pass --resubmit-judge to submit a new one (the reserved estimate stays counted against the cap)",
-            )
-        return None, float((prior.get("spent_usd") or {}).get("judge") or 0.0)
+        _refuse_resume(
+            name,
+            f"the judge batch submission outcome is unknown (status {status!r}, no batch id recorded): a batch may exist and bill. "
+            "Check the Anthropic console (Batches) first; a resume will not submit a second batch over it",
+        )
     _refuse_resume(name, f"unrecognised judge_batch status {status!r}")
 
 
-def run(
+def run(*args, **kwargs):
+    """See `_run`. The wrapper owns the run-directory lock for the whole call."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        return _run(*args, _stack=stack, **kwargs)
+
+
+def _refuse_lock(why):
+    raise PlanRefused(why)
+
+
+def _run(
     suite, incumbent_id, candidate_id, prices, cap_usd, limit=None, name=None, state_dir=".pinbench",
     suite_path=None, allow_self_judge=False, effective_config=None,
     batch=False, reuse_incumbent=None, poll_interval_s=30, max_wait_s=86400, timeout_s=DEFAULT_TIMEOUT_S,
-    batch_judge=False, resume=None, resubmit_judge=False, judge_batch_id=None, sleep_fn=None,
+    batch_judge=False, resume=None, sleep_fn=None, _stack=None,
 ):
     """Run both arms over the suite. Raises PlanRefused or RunCapExceeded before any call.
 
@@ -740,8 +770,6 @@ def run(
         raise PlanRefused(f"--timeout must be a positive number of seconds, got {timeout_s!r}")
     if (batch or batch_judge) and poll_interval_s < 1:
         raise PlanRefused(f"poll interval must be at least 1 second, got {poll_interval_s}")
-    if (resubmit_judge or judge_batch_id) and not (resume and batch_judge):
-        raise PlanRefused("--resubmit-judge and --judge-batch-id apply only to --resume with --batch-judge")
     if resume and batch:
         raise PlanRefused("--resume does not apply to a --batch run (its arms are one batch)")
     if resume and name and name != resume:
@@ -778,6 +806,8 @@ def run(
         _write_run_json(state_dir, record["run_name"], record)
         return record
 
+    _stack.enter_context(resume_mod.RunLock(Path(state_dir) / "runs" / run_name, _refuse_lock))
+
     inc_price = prices.rows[incumbent_id]
     cand_price = prices.rows[candidate_id]
     inc_estimates = {e.item_id: e.cost_usd for e in plan_result.estimate.incumbent.items}
@@ -797,7 +827,6 @@ def run(
     prog = _Progress()
     prior_items = {}
     attach_id = None
-    carried_judge = 0.0
     resumes = None
     meter = cost_mod.CostMeter(cap_usd=cap_usd)
 
@@ -816,13 +845,25 @@ def run(
             or not _arm_ok(prior_items[it.id]["candidate"])
         ]
         if batch_judge:
-            attach_id, carried_judge = _judge_resume_decision(prior, arms_todo, resubmit_judge, judge_batch_id)
+            attach_id = _judge_resume_decision(prior)
             prog.spent_judge = 0.0
         else:
             prog.spent_judge = float(spent.get("judge") or 0.0)
-        meter.spent_usd = prog.spent_incumbent + prog.spent_candidate + prog.spent_judge + carried_judge
+        meter.spent_usd = prog.spent_incumbent + prog.spent_candidate + prog.spent_judge
         # Remaining estimate: only the calls this resume would make, against the cap that
         # also covers everything already spent (billed tokens on failed calls included).
+        if attach_id:
+            # Collecting a recorded batch: the arms are kept exactly as recorded (errored ones
+            # included, they were skipped when the batch was built) and nothing is re-run.
+            unreached = [it.id for it in items if it.id not in prior_items or prior_items[it.id].get("candidate") is None]
+            if unreached:
+                _refuse_resume(resume, f"a judge batch is recorded but items were never attempted ({unreached[:3]}); cannot collect it")
+            for it in items:
+                rec = prior_items[it.id]
+                prog.result_items.append(rec)
+                prog.inc_stats.record(_reply_from_record(rec["incumbent"]))
+                prog.cand_stats.record(_reply_from_record(rec["candidate"]))
+            arms_todo = []
         remaining = 0.0
         judge_total = plan_result.estimate.judge.cost_usd if plan_result.estimate.judge else 0.0
         judge_todo = 0
@@ -894,29 +935,47 @@ def run(
         return rec
 
     def _checkpoint(_prog):
-        _write(_prog.spent_judge + carried_judge, "in_progress")
+        _write(_prog.spent_judge, "in_progress")
 
-    _write(prog.spent_judge + carried_judge, "in_progress")  # claims the name before the first call
+    _write(prog.spent_judge, "in_progress")  # claims the name before the first call
 
     guard = resume_mod.SignalGuard(graceful=True)
     try:
         with guard:
-            _execute_items(
-                items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys,
-                judge_ctx=None if batch_judge else judge_ctx, timeout_s=timeout_s, reuse=plan_result.reuse,
-                judge_reserve_usd=plan_result.estimate.judge.cost_usd if batch_judge and plan_result.estimate.judge and not attach_id else 0.0,
-                prior=prior_items, progress=prog, checkpoint=_checkpoint, guard=guard, sleep_fn=sleep_fn,
-            )
+            if not attach_id:
+                _execute_items(
+                    items, suite, incumbent_id, candidate_id, inc_price, cand_price, inc_estimates, cand_estimates, meter, api_keys,
+                    judge_ctx=None if batch_judge else judge_ctx, timeout_s=timeout_s, reuse=plan_result.reuse,
+                    judge_reserve_usd=plan_result.estimate.judge.cost_usd if batch_judge and plan_result.estimate.judge else 0.0,
+                    prior=prior_items, progress=prog, checkpoint=_checkpoint, guard=guard, sleep_fn=sleep_fn,
+                )
     except BaseException as exc:
         # An abandoning signal or a crash that reached here: every finished item is already
         # in result_items; persist them as a stopped run and let the exception continue.
-        _write(prog.spent_judge + carried_judge, "stopped", stop_reason=prog.stop_reason or f"interrupted: {type(exc).__name__}",
+        _write(prog.spent_judge, "stopped", stop_reason=prog.stop_reason or f"interrupted: {type(exc).__name__}",
                stop_signal=exc.args[0] if isinstance(exc, resume_mod.RunInterrupted) else None)
         raise
 
     stop_reason = prog.stop_reason
+    if guard.requested is not None and (stop_reason is None or stop_reason == "cap"):
+        # A signal that arrived during the LAST call: nothing was left to stop, but the run
+        # still must not go on to submit a judge batch or call itself complete.
+        prog.stopped_early = True
+        stop_reason = f"signal:{guard.name}"
     stop_signal = guard.name if guard.requested is not None else None
     hard_stop = stop_reason is not None and (stop_reason == resume_mod.STOP_QUOTA or stop_reason.startswith(("signal:", "error:")))
+
+    judge_arms = ("candidate",) if plan_result.reuse is not None else ("incumbent", "candidate")
+
+    def _arms_all_ok():
+        """Every item attempted on both arms, each succeeded or truncated. A reused incumbent's
+        carried errors are the source's, deliberately kept, and do not count here."""
+        if len(prog.result_items) != len(items):
+            return False
+        return all(
+            r.get("candidate") is not None and _arm_ok(r["candidate"]) and (plan_result.reuse is not None or _arm_ok(r["incumbent"]))
+            for r in prog.result_items
+        )
 
     if batch_judge and not hard_stop:
         from . import batch as batch_mod
@@ -929,13 +988,13 @@ def run(
             if st in _JB_STOPPED or stopped or prog.stopped_early:
                 status = "stopped"
             elif st in _JB_DONE:
-                status = "complete"
+                status = "complete" if _arms_all_ok() else "stopped"
             else:
                 status = "in_progress"
-            reason = stop_reason if (stopped or prog.stopped_early) else (f"judge_batch:{st}" if status == "stopped" else None)
+            reason = stop_reason if (stopped or prog.stopped_early) else (f"judge_batch:{st}" if status == "stopped" and st not in _JB_DONE else ("arm_errors" if status == "stopped" else None))
             if prog.stopped_early or stopped:
                 prog.stopped_early = True
-            final["record"] = _write(judge_spent + carried_judge, status, judge_state, stop_reason=reason)
+            final["record"] = _write(judge_spent, status, judge_state, stop_reason=reason)
 
         with resume_mod.SignalGuard(graceful=False):
             batch_mod.run_judge_batch(
@@ -945,8 +1004,20 @@ def run(
             )
         return final["record"]
 
-    status = "stopped" if prog.stopped_early else "complete"
-    record = _write(prog.spent_judge + carried_judge, status, stop_reason=stop_reason, stop_signal=stop_signal)
+    # A run is complete only when every item has both arms succeeded (or truncated) and the
+    # judge stage is done; anything else is `stopped`, resumable, and never a verdict input.
+    # "Done" means a judge record exists for each judged arm. A judge error is a result the
+    # report counts (it makes the verdict INCOMPLETE), not an unfinished stage.
+    judge_done = judge_ctx is None or all(all(arm in (r.get("judge") or {}) for arm in judge_arms) for r in prog.result_items)
+    if prog.stopped_early:
+        status = "stopped"
+    elif not _arms_all_ok():
+        status, stop_reason = "stopped", stop_reason or "arm_errors"
+    elif not judge_done:
+        status, stop_reason = "stopped", stop_reason or "judge_errors"
+    else:
+        status = "complete"
+    record = _write(prog.spent_judge, status, stop_reason=stop_reason, stop_signal=stop_signal)
     if prog.unexpected is not None:
         raise prog.unexpected
     return record
@@ -1038,8 +1109,19 @@ def _write_run_json(state_dir, run_name, record):
     run_dir.mkdir(parents=True, exist_ok=True)
     target = run_dir / "run.json"
     tmp = run_dir / "run.json.tmp"
-    tmp.write_text(json.dumps(record, indent=2))
+    with open(tmp, "w") as f:
+        f.write(json.dumps(record, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(target)
+    try:
+        dir_fd = os.open(run_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass  # a filesystem that cannot fsync a directory: the file itself is already synced
 
 
 def load_run(state_dir, run_name) -> dict:

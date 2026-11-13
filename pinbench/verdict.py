@@ -33,6 +33,10 @@ class Verdict:
 
 def _check_completeness(run: dict, suite) -> Optional[Check]:
     n = run["items_completed"]
+    status = run.get("status")
+    if status not in (None, "complete"):
+        # A checkpoint of a run still going, or one that stopped: never a basis for a verdict.
+        return Check("completeness", False, f"run status is {status!r} (stop_reason {run.get('stop_reason')!r}); resume it to finish")
     if run.get("stopped_early"):
         return Check("completeness", False, f"stopped_early=true; only {n} of {run['items_total']} items completed")
     if n < suite.policy.min_items:

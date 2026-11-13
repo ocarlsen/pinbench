@@ -210,7 +210,7 @@ def skip_reason(reply) -> Optional[str]:
     return None
 
 
-def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S, only_arms=None, sleep_fn=None) -> tuple:
+def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_replies: dict, timeout_s=DEFAULT_TIMEOUT_S, only_arms=None, sleep_fn=None, stop=None) -> tuple:
     """Judge both arms' outputs for one item, blind and in a random call order.
 
     `arm_replies` is {"incumbent": providers.Reply, "candidate": providers.Reply}; both
@@ -246,9 +246,9 @@ def run_judge_stage(meter, judge_id, judge_price, api_key, suite, item, arm_repl
 
         # A 429 / quota error is retried with bounded backoff; the failed attempts' billed
         # tokens (if any) are charged here, so a retry never hides spend.
-        judge_reply, prior_cost = resume_mod.call_with_rate_limit_retry(_once, judge_price, est, sleep_fn)
+        judge_reply, prior_cost = resume_mod.call_with_rate_limit_retry(_once, judge_price, est, sleep_fn, meter=meter, stop=stop)
         outcome = box["outcome"]
-        cost_usd = meter.charge(prior_cost, prior_cost) + meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price, est), est)
+        cost_usd = prior_cost + meter.charge(cost_mod.actual_call_cost(judge_reply, judge_price, est), est)
         record[arm] = _outcome_record(outcome, cost_usd)
         if resume_mod.is_rate_limited(judge_reply):
             raise resume_mod.RateLimitExhausted(f"judge call rate limited after retries: {judge_reply.error}", record)

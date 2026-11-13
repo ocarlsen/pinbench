@@ -13,9 +13,12 @@ backoff (billed tokens on failed attempts are charged), then the run stops with 
 stopped or crashed run: it refuses unless suite, arms, request params, judge, reuse source and batch
 flags match what the run recorded, keeps finished arms and reused-incumbent slots, re-runs errored
 and never-attempted arms (truncated outputs are kept, not re-run), and counts spend so far against
-`--cap`. A `--batch-judge` run resumes judge-only: a recorded batch id is polled and collected,
-never re-submitted; an unknown submit outcome needs `--judge-batch-id ID` or `--resubmit-judge`.
-Exit codes 6 and 129/130/143 are new. The report header notes a resumed or in-progress run.
+`--cap`. A `--batch-judge` run resumes judge-only: a recorded batch id is polled and collected
+(arms kept as recorded), never re-submitted; an unknown submit outcome is refused (check the
+Anthropic console). A run is `complete` only when every arm succeeded or truncated; otherwise it is
+`stopped` and `report` writes no `verdict.json` (an `in_progress` checkpoint exits 1). An abandoned
+call is charged at its estimate, `run.lock` stops two processes sharing a run, and `run.json` is
+fsynced. Exit codes 6 and 129/130/143 are new. The report header notes a resumed or in-progress run.
 
 `run --batch-judge` / `plan --batch-judge`: run the arms synchronously, then send every judge call
 as one Anthropic Message Batch at the judge row's `batch_multiplier`. A judged run with a
