@@ -19,5 +19,6 @@ Why pinbench works the way it does, one decision per line. Part of [pinbench](..
   risk a call to an untested id. `watch` only lists models and diffs id strings.
 - **The judge is one fixed model, named out loud.** `run.json` and the report header record
   its id and a hash of its rubric, so runs scored by different judges or rubrics are visibly
-  different measurements. `judge.assert_comparable` is the library check for that; no command
-  calls it yet.
+  different measurements. `judge.assert_comparable` is the library check for that:
+  `run --reuse-incumbent` refuses a source run with a different judge or rubric through it.
+  No command compares two finished runs.
