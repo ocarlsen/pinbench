@@ -7,8 +7,9 @@
 # run. A HOLD here means re-run or hand-check the judge's notes, not reject. Extras are 0.0, not
 # the review suite's 0.5, because an extra here is an invented claim, not an off-rubric finding.
 # - judge gpt-6.2-sol: from neither arm's vendor when comparing Claude and Gemini. It reasons by
-#   default and reasoning counts against max_output_tokens, hence the 3000 ceiling (no truncation in 50
-#   gpt-6.2-sol calls; max 214 output tokens).
+#   default and reasoning counts against max_output_tokens, hence the 3000 ceiling (no truncation
+#   in 50 gpt-6.2-sol calls; at most 214 output tokens on the 40 re-judge calls; control calls
+#   recorded no token counts).
 # Calibrated 2026-10-29: the first probe's points carried finer detail (which fields bulk edit
 # changes, which keys navigate), and the judge failed accurate summaries that left it out, as a
 # short summary should. Points now state the core fact only. The rewrite was uniform across all
