@@ -77,3 +77,8 @@ models:
     input: 2.00
     output: 10.00
     source: "https://developers.openai.com/api/docs/pricing"
+  gpt-6.2-sol:
+    # Standard tier, read 2026-11-17. Used as the judge in examples/suites/summaries-facts.yaml.
+    input: 2.00
+    output: 10.00
+    source: "https://developers.openai.com/api/docs/pricing"

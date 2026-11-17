@@ -143,3 +143,26 @@ How far to trust the judge:
   overreaches the person missed on a first read; neither claim appears in the passage.
 - **Run to run:** 3 of 20 judge records differed between the runs. Each run regenerates the
   summaries too, so that number mixes arm and judge variation; the verdict did not change.
+
+## Judge change: gpt-6.1-sol to gpt-6.2-sol (2026-11-17)
+
+The summaries-facts judge moved to `gpt-6.2-sol`. The pass rule was written down before any
+gpt-6.2-sol call: pass the negative control at least as well as gpt-6.1-sol (9 of 10), zero judge
+errors, and on the 40 recorded summaries from the two Argon runs, match gpt-6.1-sol's key-fact
+calls on items s04, s07 and s10 in both runs (the six run-1 summaries of those items were
+hand-checked) and flag every summary gpt-6.1-sol flagged for an unsupported claim. This is a
+calibration check, not a pinbench verdict; no command compares two judges.
+
+- **Results:** negative control 10 of 10, 0 judge errors. Key-fact calls identical to gpt-6.1-sol
+  on all 40 summaries. All 4 summaries gpt-6.1-sol flagged were flagged again.
+- **Stricter on unsupported claims:** gpt-6.2-sol flagged 11 summaries gpt-6.1-sol had passed (14
+  claims), 6 of them Sonnet's. Three passages were checked by hand (s01, s07, s09). The s09 flags
+  are real: the passage credits the new format with reaching more families, not with beating the
+  goal. On s01, "successfully argued" is an inference the passage does not make, and "eleven-day"
+  for "eleven working days" is pedantic. On s07, "enjoyed the talks" is unsupported but trivial.
+  Each summary was judged once; run to run the judge also varies (see above), so "stricter" is a
+  direction, not a measured rate.
+- **Argon comparison re-scored:** still HOLD on both runs (candidate 0.5 vs incumbent 0.4 extras
+  per item on run 1, 0.7 vs 0.2 on run 2; tolerance 0.0).
+- **Cost of the check:** $0.10 (control $0.022, re-judging 40 summaries $0.083).
+- **Comparability:** runs judged by gpt-6.1-sol are not comparable to runs judged by gpt-6.2-sol.
