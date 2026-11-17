@@ -159,9 +159,9 @@ calibration check, not a pinbench verdict; no command compares two judges.
   claims), 6 of them Sonnet's. Three passages were checked by hand (s01, s07, s09). The s09 flags
   are real: the passage credits the new format with reaching more families, not with beating the
   goal. On s01, "successfully argued" is an inference the passage does not make, and "eleven-day"
-  for "eleven working days" is pedantic. On s07, "enjoyed the talks" is unsupported but trivial.
-  Each summary was judged once; run to run the judge also varies (see above), so "stricter" is a
-  direction, not a measured rate.
+  for "eleven working days" is pedantic. On s07, "enjoyed short talks" is unsupported but trivial.
+  Each summary was judged once; judge records also differed run to run (see above), so
+  "stricter" is a direction, not a measured rate.
 - **Argon comparison re-scored:** still HOLD on both runs (candidate 0.5 vs incumbent 0.4 extras
   per item on run 1, 0.7 vs 0.2 on run 2; tolerance 0.0).
 - **Cost of the check:** $0.10 (control $0.022, re-judging 40 summaries $0.083).

@@ -6,8 +6,8 @@
 # Policy: pinbench's strict default for recall (0.0) and 0.0 for extras, frozen before the full
 # run. A HOLD here means re-run or hand-check the judge's notes, not reject. Extras are 0.0, not
 # the review suite's 0.5, because an extra here is an invented claim, not an off-rubric finding.
-# - judge gpt-6.2-sol: from neither arm's vendor when comparing Claude and Gemini. It reasons by
-#   default and reasoning counts against max_output_tokens, hence the 3000 ceiling (no truncation
+# - judge gpt-6.2-sol: from neither arm's vendor when comparing Claude and Gemini. The 3000
+#   ceiling leaves room for reasoning tokens, which count against max_output_tokens (no truncation
 #   in 50 gpt-6.2-sol calls; at most 214 output tokens on the 40 re-judge calls; control calls
 #   recorded no token counts).
 # Calibrated 2026-10-29: the first probe's points carried finer detail (which fields bulk edit
