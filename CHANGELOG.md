@@ -3,7 +3,7 @@
 ## Unreleased
 
 The summaries-facts judge moves from `gpt-6.1-sol` to `gpt-6.2-sol` (price row added); rubric, points and
-policy are unchanged. A pre-registered check (negative control 10 of 10, key-fact calls identical on
+policy are unchanged. A check against a pass rule written before the first gpt-6.2-sol call (negative control 10 of 10, key-fact calls identical on
 40 recorded summaries) passed, and runs judged before the change are not comparable to runs after it;
 see docs/judge-scoring.md.
 
