@@ -166,3 +166,32 @@ calibration check, not a pinbench verdict; no command compares two judges.
   per item on run 1, 0.7 vs 0.2 on run 2; tolerance 0.0).
 - **Cost of the check:** $0.10 (control $0.022, re-judging 40 summaries $0.083).
 - **Comparability:** runs judged by gpt-6.1-sol are not comparable to runs judged by gpt-6.2-sol.
+
+## Calibration check: gpt-6.2-astra as the summaries-facts judge (2026-11-19)
+
+The same check that qualified `gpt-6.2-sol`, run with `gpt-6.2-astra` on a scratch copy of the suite
+as the baseline for an Astra line. The pass rule was written down before any gpt-6.2-astra call
+and applied unchanged: negative control at least 9 of 10 with zero judge errors; on the 40
+recorded summaries from the two Argon runs, zero judge errors (a truncation at the 3000-token
+ceiling counts as one), key-fact calls on s04, s07 and s10 identical to gpt-6.1-sol's in both
+runs, and every summary gpt-6.1-sol flagged for an unsupported claim flagged again. The suite's
+judge stays `gpt-6.2-sol`; this is not a judge swap, and no command compares two judges.
+
+- **Result:** PASS. Negative control 10 of 10, 0 judge errors. 40 of 40 summaries judged, 0
+  errors. Key-fact calls identical to gpt-6.1-sol on all 40 (and so on s04, s07, s10). All 4
+  summaries gpt-6.1-sol flagged were flagged again.
+- **Reported, not gating:** key-fact calls also identical to gpt-6.2-sol on all 40. Extras agree
+  with gpt-6.1-sol on 37 of 40 and with gpt-6.2-sol on 32 of 40; Astra flagged 7 summaries
+  (gpt-6.1-sol 4, gpt-6.2-sol 15) and every summary it flagged, gpt-6.2-sol flagged too. On the 8
+  summaries where they differ, Astra gave fewer extras each time (s01 three times, s10 three times,
+  s07 and s09 once each); there is none where Astra flagged and gpt-6.2-sol did not.
+- **Reading of the extras (not a hand check):** Astra's 3 flags beyond gpt-6.1-sol's look real: s09
+  credits the format with reaching more families, not with beating the goal (the same flag as
+  gpt-6.2-sol); s08 ties the text alerts to the delay when the passage ties only the extra bus to it. gpt-6.2-sol's extra
+  flags that Astra skipped include the s01 "eleven days" and "persuaded the council"
+  inferences and an s10 flag on narrator debate, which are small.
+- **Tokens and cost:** at most 202 output tokens per re-judge call (mean 67), far under the
+  ceiling. Control $0.086, re-judging 40 summaries $0.318, $0.40 in all, at Astra's $8 input and
+  $40 output per million tokens.
+- **Comparability:** runs judged by gpt-6.2-astra are not comparable to runs judged by another
+  judge.
