@@ -186,10 +186,10 @@ judge stays `gpt-6.2-sol`; this is not a judge swap, and no command compares two
   summaries where they differ, Astra gave fewer extras each time (s01 three times, s10 three times,
   s07 and s09 once each); there is none where Astra flagged and gpt-6.2-sol did not.
 - **Reading of the extras (not a hand check):** Astra's 3 flags beyond gpt-6.1-sol's look real: s09
-  credits the format with reaching more families, not with beating the goal (the same flag as
-  gpt-6.2-sol); s08 ties the text alerts to the delay when the passage ties only the extra bus to it.
-  gpt-6.2-sol's extra flags that Astra skipped include the s01 "eleven days" and "persuaded the council"
-  inferences and an s10 flag on narrator debate, which are small.
+  credits the format with reaching more families, not with beating the goal (gpt-6.2-sol flagged
+  it too); s08 ties the text alerts to the delay when the passage ties only the extra bus to it.
+  gpt-6.2-sol's extra flags that Astra skipped include the s01 "eleven days" and "persuaded the
+  council" inferences and an s10 flag on narrator debate, which are small.
 - **Tokens and cost:** at most 202 output tokens per re-judge call (mean 67), far under the
   ceiling. Control $0.086, re-judging 40 summaries $0.318, $0.40 in all, at Astra's $8 input and
   $40 output per million tokens.
