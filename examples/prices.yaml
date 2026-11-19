@@ -83,7 +83,8 @@ models:
     output: 10.00
     source: "https://developers.openai.com/api/docs/pricing"
   gpt-6.2-astra:
-    # Standard tier, read 2026-11-19. Calibration-checked as the summaries-facts judge (docs/judge-scoring.md); not the suite's judge.
+    # Standard tier, read 2026-11-19. Calibration-checked as the summaries-facts judge
+    # (docs/judge-scoring.md); not the suite's judge.
     input: 8.00
     output: 40.00
     source: "https://developers.openai.com/api/docs/pricing"

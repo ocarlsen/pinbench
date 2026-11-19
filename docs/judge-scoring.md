@@ -169,8 +169,9 @@ calibration check, not a pinbench verdict; no command compares two judges.
 
 ## Calibration check: gpt-6.2-astra as the summaries-facts judge (2026-11-19)
 
-The same check that qualified `gpt-6.2-sol`, run with `gpt-6.2-astra` on a scratch copy of the suite
-as the baseline for an Astra line. The pass rule was written down before any gpt-6.2-astra call
+The same check that qualified `gpt-6.2-sol`, run with `gpt-6.2-astra` on a scratch
+copy of the suite. It records how `gpt-6.2-astra` does on the check that qualified `gpt-6.2-sol`,
+for comparison if it is ever proposed as a judge. The pass rule was written down before any gpt-6.2-astra call
 and applied unchanged: negative control at least 9 of 10 with zero judge errors; on the 40
 recorded summaries from the two Argon runs, zero judge errors (a truncation at the 3000-token
 ceiling counts as one), key-fact calls on s04, s07 and s10 identical to gpt-6.1-sol's in both
@@ -188,8 +189,14 @@ judge stays `gpt-6.2-sol`; this is not a judge swap, and no command compares two
 - **Reading of the extras (not a hand check):** Astra's 3 flags beyond gpt-6.1-sol's look real: s09
   credits the format with reaching more families, not with beating the goal (gpt-6.2-sol flagged
   it too); s08 ties the text alerts to the delay when the passage ties only the extra bus to it.
-  gpt-6.2-sol's extra flags that Astra skipped include the s01 "eleven days" and "persuaded the
-  council" inferences and an s10 flag on narrator debate, which are small.
+  The 8 summaries gpt-6.2-sol flagged and Astra did not cover four items. Three are small: s01 (the
+  "eleven-day" figure, "successfully argued" read as persuading the council, and an estimate
+  treated as exact), s07 (the swap being a sixth edition), and s10 (narrator
+  debate, pacing and ending, and what the overtime debate covered). The fourth, s09 on argon-1's
+  incumbent (the new format credited with beating the goal), is the claim the 11/17 section
+  hand-checked as real. Astra flagged that same claim in the other two s09 summaries (argon-1
+  candidate, argon-2 incumbent), so it was inconsistent on near-identical text. Each summary was
+  judged once, so fewer flags is a direction, not a measured rate.
 - **Tokens and cost:** at most 202 output tokens per re-judge call (mean 67), far under the
   ceiling. Control $0.086, re-judging 40 summaries $0.318, $0.40 in all, at Astra's $8 input and
   $40 output per million tokens.
