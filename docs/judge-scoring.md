@@ -175,8 +175,9 @@ for comparison if it is ever proposed as a judge. The pass rule was written down
 gpt-6.2-astra call and applied unchanged: negative control at least 9 of 10 with zero judge
 errors; on the 40 recorded summaries from the two Argon runs, zero judge errors (a truncation at
 the 3000-token ceiling counts as one), key-fact calls on s04, s07 and s10 identical to
-gpt-6.1-sol's in both runs, and every summary gpt-6.1-sol flagged for an unsupported claim flagged again. The suite's
-judge stays `gpt-6.2-sol`; this is not a judge swap, and no command compares two judges.
+gpt-6.1-sol's in both runs, and every summary gpt-6.1-sol flagged for an unsupported claim
+flagged again. The suite's judge stays `gpt-6.2-sol`; this is not a judge swap,
+and no command compares two judges.
 
 - **Result:** PASS. Negative control 10 of 10, 0 judge errors. 40 of 40 summaries judged, 0
   errors. Key-fact calls identical to gpt-6.1-sol on all 40 (and so on s04, s07, s10). All 4
