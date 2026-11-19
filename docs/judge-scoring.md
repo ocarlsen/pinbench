@@ -191,9 +191,9 @@ and no command compares two judges.
   credits the format with reaching more families, not with beating the goal (gpt-6.2-sol flagged
   it too); s08 ties the text alerts to the delay when the passage ties only the extra bus to it.
   The 8 summaries gpt-6.2-sol flagged and Astra did not cover four items. Three are small: s01 (the
-  "eleven-day" figure, "successfully argued" read as persuading the council, and an estimate
-  treated as exact), s07 (the swap being a sixth edition), and s10 (narrator debate, pacing and
-  ending, and what the overtime debate covered). The fourth, s09 on argon-1's incumbent (the new
+  "eleven-day" figure, "successfully argued" read as persuading the council, an estimate treated
+  as exact, and who made the flat-tire argument), s07 (attendees "enjoyed short talks"), and s10
+  (narrator debate, pacing and ending, and what the overtime debate covered). The fourth, s09 on argon-1's incumbent (the new
   format credited with beating the goal), is the claim the 11/17 section hand-checked as real.
   Astra flagged that same claim in the other two s09 summaries (argon-1 candidate, argon-2
   incumbent), so it was inconsistent on near-identical text. Each summary was judged once, so fewer
