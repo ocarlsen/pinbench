@@ -193,8 +193,9 @@ and no command compares two judges.
   The 8 summaries gpt-6.2-sol flagged and Astra did not cover four items. Three are small: s01 (the
   "eleven-day" figure, "successfully argued" read as persuading the council, an estimate treated
   as exact, and who made the flat-tire argument), s07 (attendees "enjoyed short talks"), and s10
-  (narrator debate, pacing and ending, and what the overtime debate covered). The fourth, s09 on argon-1's incumbent (the new
-  format credited with beating the goal), is the claim the 11/17 section hand-checked as real.
+  (narrator debate, pacing and ending, and what the overtime debate covered). The fourth, s09 on argon-1's
+  incumbent (the new format credited with beating the goal), is the claim the 11/17 section
+  hand-checked as real.
   Astra flagged that same claim in the other two s09 summaries (argon-1 candidate, argon-2
   incumbent), so it was inconsistent on near-identical text. Each summary was judged once, so fewer
   flags is a direction, not a measured rate.
