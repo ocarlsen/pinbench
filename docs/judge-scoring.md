@@ -171,8 +171,8 @@ calibration check, not a pinbench verdict; no command compares two judges.
 
 The same check that qualified `gpt-6.2-sol`, run with `gpt-6.2-astra` on a scratch
 copy of the suite. It records how `gpt-6.2-astra` does on the check that qualified `gpt-6.2-sol`,
-for comparison if it is ever proposed as a judge. The pass rule was written down before any gpt-6.2-astra call
-and applied unchanged: negative control at least 9 of 10 with zero judge errors; on the 40
+for comparison if it is ever proposed as a judge. The pass rule was written down before any
+gpt-6.2-astra call and applied unchanged: negative control at least 9 of 10 with zero judge errors; on the 40
 recorded summaries from the two Argon runs, zero judge errors (a truncation at the 3000-token
 ceiling counts as one), key-fact calls on s04, s07 and s10 identical to gpt-6.1-sol's in both
 runs, and every summary gpt-6.1-sol flagged for an unsupported claim flagged again. The suite's
@@ -191,10 +191,9 @@ judge stays `gpt-6.2-sol`; this is not a judge swap, and no command compares two
   it too); s08 ties the text alerts to the delay when the passage ties only the extra bus to it.
   The 8 summaries gpt-6.2-sol flagged and Astra did not cover four items. Three are small: s01 (the
   "eleven-day" figure, "successfully argued" read as persuading the council, and an estimate
-  treated as exact), s07 (the swap being a sixth edition), and s10 (narrator
-  debate, pacing and ending, and what the overtime debate covered). The fourth, s09 on argon-1's
-  incumbent (the new format credited with beating the goal), is the claim the 11/17 section
-  hand-checked as real. Astra flagged that same claim in the other two s09 summaries (argon-1
+  treated as exact), s07 (the swap being a sixth edition), and s10 (narrator debate, pacing and
+  ending, and what the overtime debate covered). The fourth, s09 on argon-1's incumbent (the new
+  format credited with beating the goal), is the claim the 11/17 section hand-checked as real. Astra flagged that same claim in the other two s09 summaries (argon-1
   candidate, argon-2 incumbent), so it was inconsistent on near-identical text. Each summary was
   judged once, so fewer flags is a direction, not a measured rate.
 - **Tokens and cost:** at most 202 output tokens per re-judge call (mean 67), far under the
