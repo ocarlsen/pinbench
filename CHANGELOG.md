@@ -7,6 +7,11 @@ points and policy are unchanged. A check against a pass rule written before the 
 call (negative control 10 of 10, key-fact calls identical on 40 recorded summaries) passed, and
 runs judged before the change are not comparable to runs after it; see docs/judge-scoring.md.
 
+A `gpt-6.2-astra` price row is added, with a calibration check as the summaries-facts judge
+against a pass rule written before the first Astra call (negative control 10 of 10, 0 errors,
+key-fact calls identical to gpt-6.1-sol on 40 recorded summaries, $0.40) that passed; the suite's
+judge stays `gpt-6.2-sol`; see docs/judge-scoring.md.
+
 `run --resume` may now drop `--hold-judge-on-errors` (adding it stays refused). A held run whose candidate
 item errors every time could never submit its judge batch through the CLI: resuming with the flag
 held it again and resuming without it was refused. Dropping it re-runs the errored arms once, then
